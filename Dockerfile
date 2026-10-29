@@ -49,10 +49,15 @@ RUN apt-get update && apt-get install -y \
     && apt-get install -y google-chrome-stable --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
-# Konfigurasi Environment Puppeteer
+# Buat non-root user dengan UID 1000 (standar keamanan Hugging Face Spaces)
+RUN useradd -m -u 1000 user
+
+# Konfigurasi Environment (Port default Hugging Face adalah 7860)
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
     PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome-stable \
-    NODE_ENV=production
+    NODE_ENV=production \
+    PORT=7860 \
+    HOME=/home/user
 
 WORKDIR /app
 
@@ -60,11 +65,15 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm install --omit=dev
 
-# Salin seluruh source code proyek
-COPY . .
+# Salin seluruh source code & atur kepemilikan folder ke user 1000
+COPY --chown=user:user . .
+RUN chown -R user:user /app
 
-# Buka port 3000
-EXPOSE 3000
+# Jalankan sebagai non-root user
+USER user
+
+# Buka port 7860
+EXPOSE 7860
 
 # Jalankan bot
 CMD ["node", "index.js"]
