@@ -1,9 +1,6 @@
 /**
  * patch.js
- * Otomatis memperbaiki bug internal whatsapp-web.js v1.26.0 di lingkungan Cloud / Docker
- * 1. Menunggu Socket siap sebelum ExposeAuthStore (mencegah TypeError reading 'Socket')
- * 2. Memicu event AppStateHasSynced jika socket sudah sync (mencegah bot menggantung saat restore sesi)
- * 3. Menambahkan retry saat terjadi 'Execution context was destroyed' / page reload
+ * Otomatis memperbaiki 3 isu internal whatsapp-web.js v1.26.0 di lingkungan Cloud / Docker
  */
 
 const fs = require('fs');
@@ -14,41 +11,43 @@ const clientPath = path.join(__dirname, 'node_modules', 'whatsapp-web.js', 'src'
 if (fs.existsSync(clientPath)) {
   let content = fs.readFileSync(clientPath, 'utf8');
 
-  // 1. Tambahkan wrapper inject retry jika belum ada
-  if (!content.includes('Execution context was destroyed')) {
-    content = content.replace(
-      'async inject() {',
-      `async inject() {
-        try {
-            return await this._injectInternal();
-        } catch (err) {
-            if (err.message && (err.message.includes('Execution context was destroyed') || err.message.includes('Session closed'))) {
-                console.log('🔄 [Client] WhatsApp Web melakukan navigasi/reload halaman. Mencoba inject ulang dalam 2 detik...');
-                await new Promise((r) => setTimeout(r, 2000));
-                return this.inject();
-            }
-            throw err;
-        }
-    }
+  // 1. Tambahkan wrapper inject retry saat page reload
+  if (!content.includes('_injectInternal')) {
+    const targetInject = 'async inject(reinject = false) {';
+    const replacementInject = [
+      'async inject(reinject = false) {',
+      '        try {',
+      '            return await this._injectInternal(reinject);',
+      '        } catch (err) {',
+      '            if (err.message && (err.message.includes("Execution context was destroyed") || err.message.includes("Session closed"))) {',
+      '                console.log("🔄 [Client] WhatsApp Web me-reload halaman. Mencoba inject ulang dalam 2 detik...");',
+      '                await new Promise((r) => setTimeout(r, 2000));',
+      '                return this.inject(reinject);',
+      '            }',
+      '            throw err;',
+      '        }',
+      '    }',
+      '',
+      '    async _injectInternal(reinject = false) {'
+    ].join('\n');
 
-    async _injectInternal() {`
-    );
+    content = content.replace(targetInject, replacementInject);
   }
 
-  // 2. Pastikan menunggu Socket siap sebelum ExposeAuthStore
-  if (!content.includes('WAWebSocketModel")?.Socket')) {
-    content = content.replace(
-      /res\s*=\s*await\s*this\.pupPage\.evaluate\(\s*['"`]window\.Debug[\s\S]*?['"`]\s*\);/,
-      `res = await this.pupPage.evaluate('window.Debug?.VERSION != undefined && !!window.require?.("WAWebSocketModel")?.Socket');`
-    );
+  // 2. Tunggu Socket WAWebSocketModel siap sebelum ExposeAuthStore
+  if (!content.includes('WAWebSocketModel").Socket')) {
+    const targetWait = "await this.pupPage.waitForFunction('window.Debug?.VERSION != undefined', {timeout: this.options.authTimeoutMs});";
+    const replacementWait = "await this.pupPage.waitForFunction('window.Debug?.VERSION != undefined && window.require && window.require(\"WAWebSocketModel\") && window.require(\"WAWebSocketModel\").Socket', {timeout: this.options.authTimeoutMs});";
+
+    content = content.replace(targetWait, replacementWait);
   }
 
-  // 3. Tambahkan trigger jika socket.hasSynced sudah true
-  if (!content.includes('if (socket.hasSynced) {')) {
-    content = content.replace(
-      /socket\.on\(\s*['"`]change:hasSynced['"`][\s\S]*?\}\s*\);/,
-      `socket.on('change:hasSynced', () => {\n                window.onAppStateHasSyncedEvent();\n            });\n            if (socket.hasSynced) {\n                window.onAppStateHasSyncedEvent();\n            }`
-    );
+  // 3. Picu AppStateHasSynced jika socket sudah sync saat restore sesi
+  if (!content.includes('AppState.hasSynced')) {
+    const targetSync = "window.AuthStore.AppState.on('change:hasSynced', () => { window.onAppStateHasSyncedEvent(); });";
+    const replacementSync = "window.AuthStore.AppState.on('change:hasSynced', () => { window.onAppStateHasSyncedEvent(); }); if (window.AuthStore.AppState && window.AuthStore.AppState.hasSynced) { window.onAppStateHasSyncedEvent(); }";
+
+    content = content.replace(targetSync, replacementSync);
   }
 
   fs.writeFileSync(clientPath, content, 'utf8');
@@ -56,4 +55,3 @@ if (fs.existsSync(clientPath)) {
 } else {
   console.warn('⚠️ [patch.js] Client.js tidak ditemukan.');
 }
-
