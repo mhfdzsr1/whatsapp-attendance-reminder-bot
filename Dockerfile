@@ -30,6 +30,9 @@ RUN npm install --omit=dev
 # Salin seluruh source code proyek
 COPY . .
 
+# Jalankan patch secara eksplisit setelah source code disalin
+RUN node patch.js
+
 # Buka port 10000 (Port standar Render Web Service)
 EXPOSE 10000
 

@@ -38,23 +38,16 @@ if (fs.existsSync(clientPath)) {
   // 2. Pastikan menunggu Socket siap sebelum ExposeAuthStore
   if (!content.includes('WAWebSocketModel")?.Socket')) {
     content = content.replace(
-      `'window.Debug?.VERSION != undefined && (window.AuthStore != undefined || window.require?.("WAWebSocketModel") != undefined)'`,
-      `'window.Debug?.VERSION != undefined && !!window.require?.("WAWebSocketModel")?.Socket'`
+      /res\s*=\s*await\s*this\.pupPage\.evaluate\(\s*['"`]window\.Debug[\s\S]*?['"`]\s*\);/,
+      `res = await this.pupPage.evaluate('window.Debug?.VERSION != undefined && !!window.require?.("WAWebSocketModel")?.Socket');`
     );
   }
 
   // 3. Tambahkan trigger jika socket.hasSynced sudah true
   if (!content.includes('if (socket.hasSynced) {')) {
     content = content.replace(
-      `socket.on('change:hasSynced', () => {
-                window.onAppStateHasSyncedEvent();
-            });`,
-      `socket.on('change:hasSynced', () => {
-                window.onAppStateHasSyncedEvent();
-            });
-            if (socket.hasSynced) {
-                window.onAppStateHasSyncedEvent();
-            }`
+      /socket\.on\(\s*['"`]change:hasSynced['"`][\s\S]*?\}\s*\);/,
+      `socket.on('change:hasSynced', () => {\n                window.onAppStateHasSyncedEvent();\n            });\n            if (socket.hasSynced) {\n                window.onAppStateHasSyncedEvent();\n            }`
     );
   }
 
@@ -63,3 +56,4 @@ if (fs.existsSync(clientPath)) {
 } else {
   console.warn('⚠️ [patch.js] Client.js tidak ditemukan.');
 }
+

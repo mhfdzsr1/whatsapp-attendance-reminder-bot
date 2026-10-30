@@ -5,6 +5,13 @@ try {
   // Abaikan jika tidak diizinkan di env tertentu
 }
 
+// Jalankan patch otomatis untuk whatsapp-web.js sebelum dimuat ke memori
+try {
+  require('./patch');
+} catch (e) {
+  console.warn('⚠️ Gagal menjalankan patch runtime:', e.message);
+}
+
 require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
