@@ -18,7 +18,8 @@ RUN apt-get update && apt-get install -y \
 # Konfigurasi Environment Puppeteer untuk Chromium Debian
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
     PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium \
-    NODE_ENV=production
+    NODE_ENV=production \
+    PORT=10000
 
 WORKDIR /app
 
@@ -29,8 +30,8 @@ RUN npm install --omit=dev
 # Salin seluruh source code proyek
 COPY . .
 
-# Buka port (Render otomatis meneruskan traffic ke port ini)
-EXPOSE 3000
+# Buka port 10000 (Port standar Render Web Service)
+EXPOSE 10000
 
 # Jalankan bot
 CMD ["node", "index.js"]
