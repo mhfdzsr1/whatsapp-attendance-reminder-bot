@@ -81,17 +81,75 @@ app.get('/test-reminder', async (req, res) => {
 
 /**
  * Endpoint Visual Live Screenshot WhatsApp Web di Cloud
- * Memungkinkan melihat tampilan layar Chromium secara real-time via browser
+ * Memungkinkan melihat tampilan layar Chromium secara real-time via browser dengan auto-refresh
  */
 app.get('/screenshot', async (req, res) => {
+  if (req.query.raw === '1') {
+    if (!waClient || !waClient.pupPage) {
+      return res.status(503).send('Browser belum siap.');
+    }
+    try {
+      const screenshot = await waClient.pupPage.screenshot({ type: 'png' });
+      res.contentType('image/png').send(screenshot);
+    } catch (err) {
+      res.status(500).send(`Error: ${err.message}`);
+    }
+    return;
+  }
+
+  res.send(`
+    <!DOCTYPE html>
+    <html lang="id">
+    <head>
+      <meta charset="UTF-8">
+      <title>WhatsApp Web Live Scanner</title>
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; text-align: center; background: #111b21; color: #e9edef; margin: 0; padding: 20px; }
+        .card { max-width: 650px; margin: 0 auto; background: #202c33; padding: 24px; border-radius: 12px; box-shadow: 0 4px 16px rgba(0,0,0,0.6); }
+        h2 { margin-top: 0; color: #00a884; }
+        img { max-width: 100%; height: auto; border-radius: 8px; border: 2px solid #2a3942; background: #fff; }
+        .btn { display: inline-block; margin-top: 16px; padding: 12px 28px; background: #00a884; color: #fff; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 15px; border: none; cursor: pointer; transition: 0.2s; }
+        .btn:hover { background: #06cf9c; }
+        .note { font-size: 14px; color: #8696a0; margin-bottom: 16px; }
+      </style>
+    </head>
+    <body>
+      <div class="card">
+        <h2>📷 WhatsApp Web Live Scanner</h2>
+        <p class="note">Layar otomatis me-refresh setiap 3 detik. Arahkan kamera WhatsApp HP Anda ke QR code di bawah ini.</p>
+        <img id="screen" src="/screenshot?raw=1" alt="Memuat tampilan WhatsApp Web...">
+        <br>
+        <button class="btn" onclick="reloadQR()">🔄 Muat Ulang QR Code Baru</button>
+      </div>
+      <script>
+        setInterval(() => {
+          document.getElementById('screen').src = '/screenshot?raw=1&t=' + Date.now();
+        }, 3000);
+        async function reloadQR() {
+          await fetch('/reload-qr');
+          setTimeout(() => {
+            document.getElementById('screen').src = '/screenshot?raw=1&t=' + Date.now();
+          }, 800);
+        }
+      </script>
+    </body>
+    </html>
+  `);
+});
+
+app.get('/reload-qr', async (req, res) => {
   if (!waClient || !waClient.pupPage) {
-    return res.status(503).send('<html><body style="font-family:sans-serif;padding:30px;text-align:center;"><h2>⏳ Browser Chromium sedang memuat...</h2><p>Silakan refresh halaman ini dalam beberapa detik.</p></body></html>');
+    return res.json({ status: 'ERR', message: 'Client belum siap.' });
   }
   try {
-    const screenshot = await waClient.pupPage.screenshot({ type: 'png' });
-    res.contentType('image/png').send(screenshot);
+    await waClient.pupPage.evaluate(() => {
+      const btn = document.querySelector('div[role="button"]') || document.querySelector('button') || document.querySelector('span[data-icon="refresh"]')?.parentElement;
+      if (btn) btn.click();
+    });
+    res.json({ status: 'OK' });
   } catch (err) {
-    res.status(500).send(`Gagal mengambil screenshot: ${err.message}`);
+    res.json({ status: 'ERR', error: err.message });
   }
 });
 
@@ -355,6 +413,18 @@ async function bootstrap() {
 
     // 5. Daftarkan event listener WhatsApp
     registerWhatsAppEvents(client);
+
+    // Auto-klik tombol muat ulang QR jika QR code kadaluarsa di layar agar selalu fresh
+    setInterval(async () => {
+      if (client && client.pupPage) {
+        try {
+          await client.pupPage.evaluate(() => {
+            const qrOverlay = document.querySelector('div[role="button"]') || document.querySelector('span[data-icon="refresh"]')?.parentElement;
+            if (qrOverlay) qrOverlay.click();
+          });
+        } catch (e) {}
+      }
+    }, 5000);
 
     // 6. Mulai Cron Scheduler tepat satu kali setelah WhatsApp Client pertama kali siap
     let isCronStarted = false;
