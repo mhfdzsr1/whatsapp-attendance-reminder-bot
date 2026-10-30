@@ -228,6 +228,16 @@ function registerWhatsAppEvents(client) {
     qrcode.generate(qr, { small: true });
   });
 
+  // Status loading WhatsApp Web
+  client.on('loading_screen', (percent, message) => {
+    console.log(`⏳ Memuat WhatsApp Web: ${percent}% - ${message}`);
+  });
+
+  // Perubahan status koneksi
+  client.on('change_state', (state) => {
+    console.log(`🔄 Status Koneksi WhatsApp: ${state}`);
+  });
+
   // Client berhasil terautentikasi
   client.on('authenticated', () => {
     console.log('✅ Autentikasi WhatsApp Web berhasil!');
