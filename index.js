@@ -214,7 +214,37 @@ async function bootstrap() {
 
     // 3. Inisialisasi MongoStore untuk RemoteAuth
     console.log('📦 Menginisialisasi MongoStore untuk RemoteAuth...');
+    const authDir = path.join(process.cwd(), '.wwebjs_auth');
+    if (!fs.existsSync(authDir)) {
+      fs.mkdirSync(authDir, { recursive: true });
+    }
+
     const store = new MongoStore({ mongoose: mongoose });
+
+    // Override store.extract: memastikan folder tujuan ada sebelum stream unduh dari MongoDB dimulai
+    store.extract = async function (options) {
+      if (options.path) {
+        const targetDir = path.dirname(options.path);
+        if (!fs.existsSync(targetDir)) {
+          fs.mkdirSync(targetDir, { recursive: true });
+        }
+      }
+
+      const bucket = new mongoose.mongo.GridFSBucket(mongoose.connection.db, {
+        bucketName: `whatsapp-${options.session}`
+      });
+
+      return new Promise((resolve, reject) => {
+        const downloadStream = bucket.openDownloadStreamByName(`${options.session}.zip`);
+        const writeStream = fs.createWriteStream(options.path);
+
+        downloadStream
+          .pipe(writeStream)
+          .on('error', (err) => reject(err))
+          .on('finish', () => resolve())
+          .on('close', () => resolve());
+      });
+    };
 
     // Override store.save: wwebjs-mongo mencari file di root (cwd), sedangkan whatsapp-web.js
     // menyimpannya di folder .wwebjs_auth/. Override ini membaca dari path yang tepat dan
