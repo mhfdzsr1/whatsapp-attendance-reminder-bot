@@ -89,7 +89,7 @@ app.get('/screenshot', async (req, res) => {
       return res.status(503).send('Browser belum siap.');
     }
     try {
-      const screenshot = await waClient.pupPage.screenshot({ type: 'png' });
+      const screenshot = await waClient.pupPage.screenshot({ type: 'png', fullPage: true });
       res.contentType('image/png').send(screenshot);
     } catch (err) {
       res.status(500).send(`Error: ${err.message}`);
@@ -380,6 +380,10 @@ async function bootstrap() {
     const puppeteerOptions = {
       headless: true,
       protocolTimeout: 0, // Nonaktifkan protocol timeout agar Puppeteer tidak time out saat sinkronisasi sesi
+      defaultViewport: {
+        width: 1280,
+        height: 1000
+      },
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
