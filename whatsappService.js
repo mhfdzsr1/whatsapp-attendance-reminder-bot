@@ -226,6 +226,8 @@ function registerWhatsAppEvents(client) {
     console.log('⚡ QR Code diterima. Pindai menggunakan WhatsApp Anda:');
     console.log('======================================================\n');
     qrcode.generate(qr, { small: true });
+    console.log('📱 Bisa scan langsung dari kotak QR terminal di atas atau buka:');
+    console.log('👉 https://wa-bot-monev-maganghub-reminder.onrender.com/screenshot\n');
   });
 
   // Status loading WhatsApp Web

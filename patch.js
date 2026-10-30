@@ -50,6 +50,27 @@ if (fs.existsSync(clientPath)) {
     content = content.replace(targetSync, replacementSync);
   }
 
+  // 4. Blokir resource media (audio, video) dan font untuk hemat RAM di cloud 512MB
+  if (!content.includes('setRequestInterception')) {
+    const targetPage = 'this.pupPage = page;';
+    const replacementPage = [
+      'this.pupPage = page;',
+      '        try {',
+      '            await page.setRequestInterception(true);',
+      '            page.on("request", (r) => {',
+      '                const rt = r.resourceType();',
+      '                if (rt === "media" || rt === "font") {',
+      '                    r.abort();',
+      '                } else {',
+      '                    r.continue();',
+      '                }',
+      '            });',
+      '        } catch (e) {}'
+    ].join('\n');
+
+    content = content.replace(targetPage, replacementPage);
+  }
+
   fs.writeFileSync(clientPath, content, 'utf8');
   console.log('✅ [patch.js] Berhasil mem-patch whatsapp-web.js/src/Client.js');
 } else {
