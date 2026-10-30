@@ -79,6 +79,22 @@ app.get('/test-reminder', async (req, res) => {
   }
 });
 
+/**
+ * Endpoint Visual Live Screenshot WhatsApp Web di Cloud
+ * Memungkinkan melihat tampilan layar Chromium secara real-time via browser
+ */
+app.get('/screenshot', async (req, res) => {
+  if (!waClient || !waClient.pupPage) {
+    return res.status(503).send('<html><body style="font-family:sans-serif;padding:30px;text-align:center;"><h2>⏳ Browser Chromium sedang memuat...</h2><p>Silakan refresh halaman ini dalam beberapa detik.</p></body></html>');
+  }
+  try {
+    const screenshot = await waClient.pupPage.screenshot({ type: 'png' });
+    res.contentType('image/png').send(screenshot);
+  } catch (err) {
+    res.status(500).send(`Gagal mengambil screenshot: ${err.message}`);
+  }
+});
+
 app.get('/', (req, res) => {
   res.status(200).json({
     name: 'WA Bot Monev Reminder Maganghub',
@@ -301,6 +317,8 @@ async function bootstrap() {
       console.log(`🧭 Menggunakan browser sistem: ${executablePath}`);
     }
 
+    const MODERN_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
+
     const puppeteerOptions = {
       headless: true,
       protocolTimeout: 0, // Nonaktifkan protocol timeout agar Puppeteer tidak time out saat sinkronisasi sesi
@@ -312,7 +330,8 @@ async function bootstrap() {
         '--no-first-run',
         '--disable-gpu',
         '--disable-extensions',
-        '--disable-default-apps'
+        '--disable-default-apps',
+        `--user-agent=${MODERN_USER_AGENT}`
       ]
     };
 
@@ -325,6 +344,7 @@ async function bootstrap() {
         store: store,
         backupSyncIntervalMs: 300000 // Sinkronisasi backup ke MongoDB tiap 5 menit
       }),
+      userAgent: MODERN_USER_AGENT,
       authTimeoutMs: 120000, // Beri waktu toleransi hingga 2 menit untuk pemulihan sesi
       puppeteer: puppeteerOptions
     });
