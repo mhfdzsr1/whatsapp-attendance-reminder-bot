@@ -328,9 +328,12 @@ async function bootstrap() {
         '--disable-dev-shm-usage',
         '--disable-accelerated-2d-canvas',
         '--no-first-run',
+        '--no-zygote',
+        '--single-process', // Menggabungkan proses Chromium agar hemat RAM di server 512MB
         '--disable-gpu',
         '--disable-extensions',
         '--disable-default-apps',
+        '--js-flags=--max-old-space-size=256', // Batasi alokasi RAM V8 Chromium
         `--user-agent=${MODERN_USER_AGENT}`
       ]
     };
