@@ -80,8 +80,8 @@ app.get('/test-reminder', async (req, res) => {
 });
 
 /**
- * Endpoint Visual Live Screenshot WhatsApp Web di Cloud
- * Memungkinkan melihat tampilan layar Chromium secara real-time via browser dengan auto-refresh
+ * Endpoint Visual Live Screenshot WhatsApp Web di Cloud (Super-Lean)
+ * Dibuat sangat ringan tanpa auto-loop agar RAM 512MB selalu aman
  */
 app.get('/screenshot', async (req, res) => {
   if (req.query.raw === '1') {
@@ -89,8 +89,9 @@ app.get('/screenshot', async (req, res) => {
       return res.status(503).send('Browser belum siap.');
     }
     try {
-      const screenshot = await waClient.pupPage.screenshot({ type: 'png', fullPage: true });
-      res.contentType('image/png').send(screenshot);
+      // Gunakan JPEG terkompresi (70% kualitas) agar hemat buffer RAM
+      const screenshot = await waClient.pupPage.screenshot({ type: 'jpeg', quality: 70 });
+      res.contentType('image/jpeg').send(screenshot);
     } catch (err) {
       res.status(500).send(`Error: ${err.message}`);
     }
@@ -109,28 +110,30 @@ app.get('/screenshot', async (req, res) => {
         .card { max-width: 650px; margin: 0 auto; background: #202c33; padding: 24px; border-radius: 12px; box-shadow: 0 4px 16px rgba(0,0,0,0.6); }
         h2 { margin-top: 0; color: #00a884; }
         img { max-width: 100%; height: auto; border-radius: 8px; border: 2px solid #2a3942; background: #fff; }
-        .btn { display: inline-block; margin-top: 16px; padding: 12px 28px; background: #00a884; color: #fff; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 15px; border: none; cursor: pointer; transition: 0.2s; }
-        .btn:hover { background: #06cf9c; }
+        .btn-group { margin-top: 16px; display: flex; justify-content: center; gap: 12px; }
+        .btn { padding: 12px 24px; background: #00a884; color: #fff; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 15px; border: none; cursor: pointer; transition: 0.2s; }
+        .btn-secondary { background: #374151; }
+        .btn:hover { opacity: 0.9; }
         .note { font-size: 14px; color: #8696a0; margin-bottom: 16px; }
       </style>
     </head>
     <body>
       <div class="card">
         <h2>📷 WhatsApp Web Live Scanner</h2>
-        <p class="note">Layar otomatis me-refresh setiap 3 detik. Arahkan kamera WhatsApp HP Anda ke QR code di bawah ini.</p>
+        <p class="note">Arahkan kamera WhatsApp HP Anda ke QR code di bawah. Klik tombol untuk memuat ulang jika QR kadaluarsa.</p>
         <img id="screen" src="/screenshot?raw=1" alt="Memuat tampilan WhatsApp Web...">
-        <br>
-        <button class="btn" onclick="reloadQR()">🔄 Muat Ulang QR Code Baru</button>
+        <div class="btn-group">
+          <button class="btn btn-secondary" onclick="refreshScreen()">🔄 Segarkan Tampilan</button>
+          <button class="btn" onclick="reloadQR()">⚡ Buat QR Baru</button>
+        </div>
       </div>
       <script>
-        setInterval(() => {
+        function refreshScreen() {
           document.getElementById('screen').src = '/screenshot?raw=1&t=' + Date.now();
-        }, 3000);
+        }
         async function reloadQR() {
           await fetch('/reload-qr');
-          setTimeout(() => {
-            document.getElementById('screen').src = '/screenshot?raw=1&t=' + Date.now();
-          }, 800);
+          setTimeout(refreshScreen, 1200);
         }
       </script>
     </body>
@@ -417,18 +420,6 @@ async function bootstrap() {
 
     // 5. Daftarkan event listener WhatsApp
     registerWhatsAppEvents(client);
-
-    // Auto-klik tombol muat ulang QR jika QR code kadaluarsa di layar agar selalu fresh
-    setInterval(async () => {
-      if (client && client.pupPage) {
-        try {
-          await client.pupPage.evaluate(() => {
-            const qrOverlay = document.querySelector('div[role="button"]') || document.querySelector('span[data-icon="refresh"]')?.parentElement;
-            if (qrOverlay) qrOverlay.click();
-          });
-        } catch (e) {}
-      }
-    }, 5000);
 
     // 6. Mulai Cron Scheduler tepat satu kali setelah WhatsApp Client pertama kali siap
     let isCronStarted = false;
