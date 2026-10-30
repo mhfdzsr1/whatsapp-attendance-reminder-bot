@@ -13,7 +13,6 @@ if (fs.existsSync(clientPath)) {
 
   // 1. Tambahkan wrapper inject retry saat page reload
   if (!content.includes('_injectInternal')) {
-    const targetInject = 'async inject(reinject = false) {';
     const replacementInject = [
       'async inject(reinject = false) {',
       '        try {',
@@ -31,23 +30,19 @@ if (fs.existsSync(clientPath)) {
       '    async _injectInternal(reinject = false) {'
     ].join('\n');
 
-    content = content.replace(targetInject, replacementInject);
+    content = content.replace(/async\s+inject\s*\([^)]*\)\s*\{/, replacementInject);
   }
 
   // 2. Tunggu Socket WAWebSocketModel siap sebelum ExposeAuthStore
   if (!content.includes('WAWebSocketModel").Socket')) {
-    const targetWait = "await this.pupPage.waitForFunction('window.Debug?.VERSION != undefined', {timeout: this.options.authTimeoutMs});";
-    const replacementWait = "await this.pupPage.waitForFunction('window.Debug?.VERSION != undefined && window.require && window.require(\"WAWebSocketModel\") && window.require(\"WAWebSocketModel\").Socket', {timeout: this.options.authTimeoutMs});";
-
-    content = content.replace(targetWait, replacementWait);
+    const replacementWait = 'await this.pupPage.waitForFunction(\'window.Debug?.VERSION != undefined && window.require && window.require("WAWebSocketModel") && window.require("WAWebSocketModel").Socket\', {timeout: this.options.authTimeoutMs});';
+    content = content.replace(/await\s+this\.pupPage\.waitForFunction\(\s*['"]window\.Debug\?\.VERSION\s*!=\s*undefined['"]\s*,\s*\{\s*timeout:\s*this\.options\.authTimeoutMs\s*\}\s*\);/, replacementWait);
   }
 
   // 3. Picu AppStateHasSynced jika socket sudah sync saat restore sesi
   if (!content.includes('AppState.hasSynced')) {
-    const targetSync = "window.AuthStore.AppState.on('change:hasSynced', () => { window.onAppStateHasSyncedEvent(); });";
     const replacementSync = "window.AuthStore.AppState.on('change:hasSynced', () => { window.onAppStateHasSyncedEvent(); }); if (window.AuthStore.AppState && window.AuthStore.AppState.hasSynced) { window.onAppStateHasSyncedEvent(); }";
-
-    content = content.replace(targetSync, replacementSync);
+    content = content.replace(/window\.AuthStore\.AppState\.on\(\s*['"]change:hasSynced['"]\s*,\s*\(\)\s*=>\s*\{\s*window\.onAppStateHasSyncedEvent\(\);\s*\}\s*\);/, replacementSync);
   }
 
   // 4. Blokir resource media (audio, video) dan font untuk hemat RAM di cloud 512MB

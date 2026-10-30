@@ -436,7 +436,19 @@ async function bootstrap() {
       await client.initialize();
     } catch (initErr) {
       if (initErr.message && (initErr.message.includes('Execution context was destroyed') || initErr.message.includes('Session closed'))) {
-        console.warn('⚠️ Halaman WhatsApp Web memuat ulang saat otentikasi. Menunggu sesi stabil...');
+        console.warn('⚠️ Halaman WhatsApp Web memuat ulang saat otentikasi. Memulihkan koneksi inject...');
+        let retries = 10;
+        while (retries > 0) {
+          try {
+            await new Promise((r) => setTimeout(r, 2000));
+            await client.inject();
+            console.log('✅ Berhasil terhubung kembali ke WhatsApp Web setelah reload!');
+            break;
+          } catch (reinjectErr) {
+            retries--;
+            if (retries === 0) console.warn('Gagal inject ulang:', reinjectErr.message);
+          }
+        }
       } else {
         throw initErr;
       }
