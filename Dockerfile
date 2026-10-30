@@ -23,8 +23,8 @@ ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true \
 
 WORKDIR /app
 
-# Salin package.json & install production dependencies
-COPY package*.json ./
+# Salin package.json dan script patch sebelum install dependensi
+COPY package*.json patch.js ./
 RUN npm install --omit=dev
 
 # Salin seluruh source code proyek
