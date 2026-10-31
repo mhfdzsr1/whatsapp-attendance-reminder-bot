@@ -1,7 +1,7 @@
 {
-  "name": "wa-bot-monev-reminder",
+  "name": "whatsapp-attendance-reminder-bot",
   "version": "1.0.0",
-  "description": "WhatsApp Bot Pengingat Absensi Monev Maganghub dengan RemoteAuth MongoDB Atlas untuk Free Cloud Deployment",
+  "description": "Lightweight, zero-chromium WhatsApp Attendance Reminder Bot using Baileys and MongoDB Atlas session persistence for free 24/7 cloud deployment",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
@@ -9,12 +9,11 @@
   },
   "keywords": [
     "whatsapp-bot",
-    "whatsapp-web.js",
-    "remote-auth",
-    "maganghub",
-    "monev",
-    "reminder",
-    "cron"
+    "baileys",
+    "attendance-reminder",
+    "mongodb-atlas",
+    "cron-scheduler",
+    "render-cloud"
   ],
   "author": "",
   "license": "ISC",

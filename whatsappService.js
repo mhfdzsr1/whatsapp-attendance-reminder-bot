@@ -63,8 +63,8 @@ async function isSenderAdmin(sock, chatId, senderJid) {
  */
 function getIntroductionMessage() {
   return (
-    '👋 *Halo Gaiss! Salam kenal!*\n\n' +
-    'Saya adalah *Bot Pengingat Monev Maganghub Dit.PDLKWS (Unofficial)*, asisten virtual yang bertugas membantu teman-teman di grup ini agar tidak terlewat melakukan absensi harian di Monev Maganghub.\n\n' +
+    '👋 *Halo Semuanya! Salam kenal!*\n\n' +
+    'Saya adalah *Bot Pengingat Absensi Harian (Attendance Reminder Bot)*, asisten virtual yang bertugas membantu teman-teman di grup ini agar tidak terlewat melakukan absensi harian.\n\n' +
     '✨ *Fungsi Utama Saya:*\n' +
     '• Mengingatkan secara otomatis anggota grup yang belum absen secara berkala pada hari kerja (Senin–Jumat pukul 16:00 s.d. 23:00 WIB).\n' +
     '• Memantau progres absensi secara real-time.\n' +
@@ -74,7 +74,7 @@ function getIntroductionMessage() {
     '   👉 Daftarkan nomor Anda agar dikenali bot.\n' +
     '   Contoh: `!daftar Adit Suditya`\n\n' +
     '2. *!sudah*\n' +
-    '   👉 Konfirmasikan setelah Anda selesai absen di website Maganghub hari ini.\n\n' +
+    '   👉 Konfirmasikan setelah Anda selesai melakukan absensi hari ini.\n\n' +
     '3. *!keluar*\n' +
     '   👉 Hapus diri sendiri dari bot dan Anda tidak akan mendapat notif reminder lagi.\n\n' +
     '4. *!bantuan* atau *!halo*\n' +
@@ -86,7 +86,7 @@ function getIntroductionMessage() {
     '   👉 Menghapus anggota dari sistem pengingat grup.\n\n' +
     '3. *!test-reminder*\n' +
     '   👉 Menjalankan simulasi pengecekan/pengingat absensi langsung.\n\n' +
-    '💡 *Langkah Awal:* Silakan semua anggota grup mendaftarkan diri dengan mengetik *!daftar [Nama]* sekarang ya! Semangat magangnya gaiss! 🚀'
+    '💡 *Langkah Awal:* Silakan semua anggota grup mendaftarkan diri dengan mengetik *!daftar [Nama]* sekarang ya! Semangat beraktivitas semuanya! 🚀'
   );
 }
 
@@ -164,7 +164,7 @@ async function handleMessage(sock, msg) {
     if (users.length === 0) {
       await sock.sendMessage(
         chatId,
-        { text: '📋 *DAFTAR ANGGOTA MONEV*\n\nBelum ada anggota yang terdaftar di grup ini.\nSilakan mendaftar dengan ketik:\n*!daftar [Nama Lengkap]*' },
+        { text: '📋 *DAFTAR ANGGOTA*\n\nBelum ada anggota yang terdaftar di grup ini.\nSilakan mendaftar dengan ketik:\n*!daftar [Nama Lengkap]*' },
         { quoted: msg }
       );
       return;
@@ -178,7 +178,7 @@ async function handleMessage(sock, msg) {
     });
     const attendedSet = new Set(attendedUserIds.map((id) => id.toString()));
 
-    let text = `📋 *DAFTAR ANGGOTA MONEV TERDAFTAR (ADMIN)*\nTotal: *${users.length}* Orang\n\n`;
+    let text = `📋 *DAFTAR ANGGOTA TERDAFTAR (ADMIN)*\nTotal: *${users.length}* Orang\n\n`;
     users.forEach((u, idx) => {
       const isAttended = attendedSet.has(u._id.toString());
       const statusIcon = isAttended ? '✅ Sudah Absen' : '⏳ Belum Absen';
@@ -267,7 +267,7 @@ async function handleMessage(sock, msg) {
   // 5. Perintah !daftar [Nama]
   if (body.startsWith('!daftar')) {
     if (!isGroup) {
-      await sock.sendMessage(chatId, { text: '⚠️ Perintah ini harus dijalankan di dalam grup WhatsApp Magangers.' }, { quoted: msg });
+      await sock.sendMessage(chatId, { text: '⚠️ Perintah ini harus dijalankan di dalam grup WhatsApp.' }, { quoted: msg });
       return;
     }
 
@@ -330,7 +330,7 @@ async function handleMessage(sock, msg) {
     await sock.sendMessage(
       chatId,
       {
-        text: `${getMentionHandle(userJid)} Berhasil terdaftar! Sistem akan mengingatkanmu di grup ini jika belum absen Monev.`,
+        text: `${getMentionHandle(userJid)} Berhasil terdaftar! Sistem akan mengingatkanmu di grup ini jika belum absen.`,
         mentions: [userJid]
       },
       { quoted: msg }
@@ -381,7 +381,7 @@ async function handleMessage(sock, msg) {
       await sock.sendMessage(
         chatId,
         {
-          text: `${getMentionHandle(userJid)} Kamu sudah mengonfirmasi absen Monev untuk hari ini. Terima kasih! 👍`,
+          text: `${getMentionHandle(userJid)} Kamu sudah mengonfirmasi absen untuk hari ini. Terima kasih! 👍`,
           mentions: [userJid]
         },
         { quoted: msg }
@@ -414,13 +414,13 @@ async function handleMessage(sock, msg) {
 
     if (totalActiveCount > 0 && completedCount >= totalActiveCount) {
       const allClearMessage =
-        '🎉 Mantap Gaiss! Semua anggota grup Magangers sudah absen Monev Maganghub hari ini.\n\n' +
-        'Tetap semangat gaiss! Rezeki yang sudah tertakar, tidak mungkin tertukar. ✨';
+        '🎉 Mantap Semuanya! Semua anggota grup sudah menyelesaikan absensi hari ini.\n\n' +
+        'Terima kasih atas kerja samanya dan tetap semangat! ✨';
       await sock.sendMessage(chatId, { text: allClearMessage });
     } else {
       const remaining = Math.max(0, totalActiveCount - completedCount);
       const ackMessage =
-        `${getMentionHandle(userJid)} Absen Monev kamu hari ini berhasil dicatat! ✅\n` +
+        `${getMentionHandle(userJid)} Absensi kamu hari ini berhasil dicatat! ✅\n` +
         `📊 Progress grup: *${completedCount}/${totalActiveCount}* anggota sudah absen (${remaining} orang lagi).`;
       await sock.sendMessage(chatId, { text: ackMessage, mentions: [userJid] }, { quoted: msg });
     }

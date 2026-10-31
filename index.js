@@ -179,7 +179,7 @@ app.get(['/', '/anggota', '/users'], async (req, res) => {
       <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Daftar Anggota Monev Maganghub</title>
+        <title>Daftar Anggota Presensi Tim</title>
         <style>
           body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f3f4f6; margin: 0; padding: 24px; color: #1f2937; }
           .card { max-width: 800px; margin: 0 auto; background: #fff; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); overflow: hidden; }
@@ -195,8 +195,8 @@ app.get(['/', '/anggota', '/users'], async (req, res) => {
       <body>
         <div class="card">
           <div class="header">
-            <h1>📋 Daftar Anggota Terdaftar Monev Maganghub</h1>
-            <p>Portal Monitoring & Evaluasi Presensi Magang</p>
+            <h1>📋 Daftar Anggota Terdaftar</h1>
+            <p>Portal Monitoring & Presensi Harian Tim</p>
           </div>
           <div class="stats">
             <div>👥 Total Terdaftar: <strong>${users.length} Orang</strong></div>
@@ -270,7 +270,7 @@ async function connectToWhatsApp() {
       console.log('======================================================\n');
       qrcodeTerminal.generate(qr, { small: true });
       console.log('📱 Bisa scan langsung di terminal atau buka di browser:');
-      console.log('👉 https://wa-bot-monev-maganghub-reminder.onrender.com/qr\n');
+      console.log('👉 http://localhost:' + PORT + '/qr\n');
     }
 
     if (connection === 'close') {
