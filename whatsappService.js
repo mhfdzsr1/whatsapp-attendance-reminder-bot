@@ -1,190 +1,65 @@
-const qrcode = require('qrcode-terminal');
 const User = require('./models/User');
 const AttendanceLog = require('./models/AttendanceLog');
 const { getJakartaDateRange, executeReminderJob } = require('./cronService');
 
 /**
  * Format nomor WhatsApp pengirim untuk keperluan mention dalam teks
- * Memotong akhiran @c.us maupun @lid agar mention WhatsApp berfungsi sempurna
- * Contoh: 628123456789@c.us -> @628123456789
- * Contoh: 82300331135097@lid -> @82300331135097
+ * Contoh: 628123456789@s.whatsapp.net -> @628123456789
  */
 function getMentionHandle(whatsappNumber) {
-  const cleanId = (whatsappNumber || '').split('@')[0];
+  const cleanId = (whatsappNumber || '').split('@')[0].replace(/[^0-9]/g, '');
   return `@${cleanId}`;
 }
 
 /**
- * Mengonversi ID pengirim (baik @lid maupun @c.us) ke format nomor telepon asli (@c.us) jika memungkinkan
- * Menggunakan timeout 2.5 detik agar tidak pernah menahan pemrosesan pesan
- * @param {import('whatsapp-web.js').Client} client
- * @param {string} rawId
- * @returns {Promise<string>} Format nomor WhatsApp (contoh: 628xxx@c.us) atau fallback ke rawId jika tidak ditemukan
+ * Mengonversi nomor WhatsApp ke format JID Baileys (xxx@s.whatsapp.net)
  */
-async function resolvePhoneNumber(client, rawId) {
-  if (!rawId) return rawId;
-  if (rawId.endsWith('@c.us')) return rawId;
-
-  const resolveLogic = async () => {
-    // 1. Coba resolusi melalui getContactLidAndPhone
-    try {
-      if (typeof client.getContactLidAndPhone === 'function') {
-        const results = await client.getContactLidAndPhone([rawId]);
-        if (results && results[0] && results[0].pn) {
-          console.log(`🔍 Terdeteksi nomor asli dari LID ${rawId} -> ${results[0].pn}`);
-          return results[0].pn;
-        }
-      }
-    } catch (err) {
-      // Abaikan jika gagal
-    }
-
-    // 2. Coba fallback melalui getContactById
-    try {
-      const contact = await client.getContactById(rawId);
-      if (contact && contact.id && contact.id._serialized && contact.id._serialized.endsWith('@c.us')) {
-        return contact.id._serialized;
-      }
-      if (contact && contact.id && contact.id.user && !contact.id.user.includes('@')) {
-        return `${contact.id.user}@c.us`;
-      }
-      if (contact && contact.number) {
-        return `${contact.number}@c.us`;
-      }
-    } catch (err) {
-      // Abaikan jika gagal
-    }
-
-    return rawId;
-  };
-
-  try {
-    const timeout = new Promise((resolve) => setTimeout(() => resolve(rawId), 2500));
-    return await Promise.race([resolveLogic(), timeout]);
-  } catch (e) {
-    return rawId;
-  }
+function toBaileysJid(whatsappNumber) {
+  if (!whatsappNumber) return '';
+  const clean = whatsappNumber.split('@')[0].replace(/[^0-9]/g, '');
+  return `${clean}@s.whatsapp.net`;
 }
 
 /**
- * Mengecek apakah pengirim pesan adalah Admin di grup WhatsApp atau akun Bot itu sendiri
- * @param {import('whatsapp-web.js').Client} client
- * @param {import('whatsapp-web.js').Message} message
- * @param {string} chatId
- * @param {string} rawSenderId
- * @returns {Promise<boolean>}
+ * Mengecek apakah pengirim pesan adalah Admin di grup WhatsApp atau ada di ADMIN_NUMBERS .env
  */
-async function isSenderAdmin(client, message, chatId, rawSenderId) {
+async function isSenderAdmin(sock, chatId, senderJid) {
   try {
-    // 1. Jika dikirim dari akun bot itu sendiri (fromMe)
-    if (message.fromMe) {
-      console.log('🔑 [Admin Check] Akses diizinkan: Pesan berasal dari akun Bot sendiri (fromMe).');
+    const cleanSender = senderJid.split('@')[0].replace(/[^0-9]/g, '');
+
+    // 1. Cek dari daftar ADMIN_NUMBERS di file .env
+    const envAdmins = (process.env.ADMIN_NUMBERS || '')
+      .split(',')
+      .map((n) => n.trim().replace(/[^0-9]/g, ''))
+      .filter((n) => n.length > 0);
+
+    if (envAdmins.some((admin) => cleanSender === admin || cleanSender.endsWith(admin))) {
+      console.log(`🔑 [Admin Check] Akses diizinkan: Cocok dengan ADMIN_NUMBERS di .env (${cleanSender})`);
       return true;
     }
 
-    // Resolusi nomor pengirim (mengatasi multi-device @lid vs @c.us)
-    let contactNumber = '';
-    let contactSerialized = '';
-    try {
-      const contact = await message.getContact();
-      if (contact) {
-        contactNumber = contact.number || (contact.id && contact.id.user) || '';
-        contactSerialized = (contact.id && contact.id._serialized) || '';
-      }
-    } catch (e) {
-      // Abaikan jika getContact gagal
-    }
-
-    let resolvedId = rawSenderId;
-    try {
-      resolvedId = await resolvePhoneNumber(client, rawSenderId);
-    } catch (e) {
-      // Abaikan
-    }
-
-    const cleanRaw = (rawSenderId || '').replace(/[^0-9]/g, '');
-    const cleanResolved = (resolvedId || '').replace(/[^0-9]/g, '');
-    const cleanContact = (contactNumber || '').replace(/[^0-9]/g, '');
-    const cleanContactSer = (contactSerialized || '').replace(/[^0-9]/g, '');
-
-    console.log(
-      `🔍 [Admin Check] Memeriksa pengirim: rawSenderId="${rawSenderId}", resolvedId="${resolvedId}", contactNum="${contactNumber}", contactJid="${contactSerialized}"`
-    );
-
-    // 2. Cek apakah nomor pengirim terdaftar di variabel ADMIN_NUMBERS pada file .env (SuperAdmin)
-    const envAdmins = (process.env.ADMIN_NUMBERS || '')
-      .split(',')
-      .map((s) => s.trim().replace(/[^0-9]/g, ''))
-      .filter(Boolean);
-
-    if (envAdmins.length > 0) {
-      const isEnvAdmin = envAdmins.some((adminNum) => {
-        return (
-          (cleanContact && (cleanContact.endsWith(adminNum) || adminNum.endsWith(cleanContact))) ||
-          (cleanContactSer && (cleanContactSer.endsWith(adminNum) || adminNum.endsWith(cleanContactSer))) ||
-          (cleanResolved && (cleanResolved.endsWith(adminNum) || adminNum.endsWith(cleanResolved))) ||
-          (cleanRaw && (cleanRaw.endsWith(adminNum) || adminNum.endsWith(cleanRaw)))
-        );
+    // 2. Cek metadata grup WhatsApp jika berada di dalam grup
+    if (chatId.endsWith('@g.us')) {
+      const groupMetadata = await sock.groupMetadata(chatId);
+      const participant = groupMetadata.participants.find((p) => {
+        const cleanP = p.id.split('@')[0].replace(/[^0-9]/g, '');
+        return cleanP === cleanSender;
       });
 
-      if (isEnvAdmin) {
-        console.log(`🔑 [Admin Check] Akses diizinkan: Pengirim cocok dengan ADMIN_NUMBERS di .env`);
+      if (participant && (participant.admin === 'admin' || participant.admin === 'superadmin')) {
+        console.log(`🔑 [Admin Check] Akses diizinkan: Admin grup (${cleanSender})`);
         return true;
       }
     }
-
-    // 3. Verifikasi role admin langsung dari metadata grup WhatsApp
-    if (chatId && chatId.endsWith('@g.us')) {
-      const chat = await message.getChat();
-      if (chat && chat.isGroup && Array.isArray(chat.participants)) {
-        // Cari seluruh peserta yang berstatus admin di grup
-        const adminParticipants = chat.participants.filter(
-          (p) =>
-            p.isAdmin === true ||
-            p.isSuperAdmin === true ||
-            p.admin === 'admin' ||
-            p.admin === 'superadmin' ||
-            p.role === 'admin' ||
-            p.role === 'superadmin'
-        );
-
-        console.log(`👥 [Admin Check] Jumlah total peserta grup: ${chat.participants.length}, Admin ditemukan: ${adminParticipants.length}`);
-
-        // Cek apakah pengirim cocok dengan salah satu admin grup
-        for (const admin of adminParticipants) {
-          const adminId = (admin.id && admin.id._serialized) || (typeof admin.id === 'string' ? admin.id : '');
-          const adminUser = (admin.id && admin.id.user) || '';
-          const cleanAdmin = adminId.replace(/[^0-9]/g, '');
-          const cleanAdminUser = adminUser.replace(/[^0-9]/g, '');
-
-          const matches =
-            adminId === rawSenderId ||
-            adminId === resolvedId ||
-            adminId === contactSerialized ||
-            (cleanAdminUser && (cleanAdminUser === cleanContact || cleanAdminUser === cleanResolved || cleanAdminUser === cleanRaw)) ||
-            (cleanAdmin && (
-              (cleanContact && cleanAdmin.endsWith(cleanContact)) ||
-              (cleanResolved && cleanAdmin.endsWith(cleanResolved)) ||
-              (cleanRaw && cleanAdmin.endsWith(cleanRaw))
-            ));
-
-          if (matches) {
-            console.log(`🔑 [Admin Check] Akses diizinkan: Pengirim cocok dengan Admin Grup (${adminId})`);
-            return true;
-          }
-        }
-      }
-    }
   } catch (err) {
-    console.warn('❌ Gagal memverifikasi status admin pengirim:', err.message);
+    console.warn('⚠️ Gagal memeriksa status admin:', err.message);
   }
 
-  console.warn(`⛔ [Admin Check] Akses ditolak untuk rawSenderId="${rawSenderId}"`);
   return false;
 }
 
 /**
- * Teks perkenalan resmi bot mengenai identitas dan fungsinya
+ * Teks perkenalan resmi bot
  */
 function getIntroductionMessage() {
   return (
@@ -216,156 +91,81 @@ function getIntroductionMessage() {
 }
 
 /**
- * Setup seluruh event listener untuk WhatsApp Client
- * @param {import('whatsapp-web.js').Client} client
+ * Memproses pesan teks yang masuk
  */
-function registerWhatsAppEvents(client) {
-  // QR Code generation
-  client.on('qr', (qr) => {
-    console.log('\n======================================================');
-    console.log('⚡ QR Code diterima. Pindai menggunakan WhatsApp Anda:');
-    console.log('======================================================\n');
-    qrcode.generate(qr, { small: true });
-    console.log('📱 Bisa scan langsung dari kotak QR terminal di atas atau buka:');
-    console.log('👉 https://wa-bot-monev-maganghub-reminder.onrender.com/screenshot\n');
-  });
+async function handleMessage(sock, msg) {
+  if (!msg.message) return;
 
-  // Status loading WhatsApp Web
-  client.on('loading_screen', (percent, message) => {
-    console.log(`⏳ Memuat WhatsApp Web: ${percent}% - ${message}`);
-  });
+  const chatId = msg.key.remoteJid;
+  if (!chatId) return;
 
-  // Perubahan status koneksi
-  client.on('change_state', (state) => {
-    console.log(`🔄 Status Koneksi WhatsApp: ${state}`);
-  });
+  const isGroup = chatId.endsWith('@g.us');
+  const senderJid = isGroup ? (msg.key.participant || msg.participant) : chatId;
+  if (!senderJid) return;
 
-  // Client berhasil terautentikasi
-  client.on('authenticated', () => {
-    console.log('✅ Autentikasi WhatsApp Web berhasil!');
-  });
+  // Ekstrak pesan teks (mendukung text biasa, extended text, atau caption)
+  const body = (
+    msg.message.conversation ||
+    msg.message.extendedTextMessage?.text ||
+    msg.message.imageMessage?.caption ||
+    ''
+  ).trim();
 
-  // Sesi berhasil disimpan ke MongoDB oleh RemoteAuth
-  client.on('remote_session_saved', () => {
-    console.log('💾 Sesi WhatsApp berhasil disimpan ke MongoDB Atlas (RemoteAuth).');
-  });
-
-  // Client siap digunakan
-  client.on('ready', () => {
-    console.log('🚀 WhatsApp Client siap dan aktif!');
-  });
-
-  // Gagal autentikasi
-  client.on('auth_failure', (msg) => {
-    console.error('❌ Gagal autentikasi WhatsApp:', msg);
-  });
-
-  // Terputus
-  client.on('disconnected', (reason) => {
-    console.warn('⚠️ WhatsApp client terputus:', reason);
-  });
-
-  // Event otomatis saat bot baru di-invite / bergabung ke dalam grup
-  client.on('group_join', async (notification) => {
-    try {
-      const myId = client.info && client.info.wid ? client.info.wid._serialized : null;
-      const isBotAdded = notification.recipientIds && myId && notification.recipientIds.includes(myId);
-
-      // Jika yang baru masuk grup adalah bot itu sendiri
-      if (isBotAdded) {
-        console.log(`🎉 Bot baru saja diundang ke grup: ${notification.chatId}. Mengirim pesan perkenalan...`);
-        const welcomeMessage = getIntroductionMessage();
-        await client.sendMessage(notification.chatId, welcomeMessage);
-      }
-    } catch (err) {
-      console.error('Error saat menangani event group_join:', err.message);
-    }
-  });
-
-  // Listener pesan masuk dari orang lain
-  client.on('message', async (message) => {
-    try {
-      await handleIncomingMessage(client, message);
-    } catch (err) {
-      console.error('Error saat memproses pesan masuk:', err);
-    }
-  });
-
-  // Listener pesan yang dikirim dari akun bot sendiri (agar testing dari nomor sendiri juga berfungsi)
-  client.on('message_create', async (message) => {
-    if (message.fromMe) {
-      try {
-        await handleIncomingMessage(client, message);
-      } catch (err) {
-        console.error('Error saat memproses pesan fromMe:', err);
-      }
-    }
-  });
-}
-
-/**
- * Memproses pesan masuk dari pengguna/grup
- * @param {import('whatsapp-web.js').Client} client
- * @param {import('whatsapp-web.js').Message} message
- */
-async function handleIncomingMessage(client, message) {
-  const body = (message.body || '').trim();
   if (!body.startsWith('!')) return;
 
-  const chatId = message.from; // ID grup atau chat (contoh: 12345xxx@g.us)
-  const isGroup = chatId.endsWith('@g.us');
-  const rawSenderId = message.author || message.from; // ID pengirim mentah (bisa @c.us atau @lid)
+  console.log(`📩 Perintah diterima di ${chatId}: "${body}" dari ${senderJid}`);
 
-  console.log(`📩 Perintah diterima di ${chatId}: "${body}" dari ${rawSenderId}`);
-
-  // Perintah perkenalan & bantuan (instan tanpa perlu resolusi nomor)
+  // 1. Perintah !halo / !bantuan
   if (['!halo', '!bantuan', '!help', '!perkenalan', '!intro'].includes(body.toLowerCase())) {
-    await client.sendMessage(chatId, getIntroductionMessage());
+    await sock.sendMessage(chatId, { text: getIntroductionMessage() }, { quoted: msg });
     return;
   }
 
-  // Perintah uji coba pengingat langsung (khusus Admin Grup)
+  // 2. Perintah !test-reminder
   if (body.toLowerCase() === '!test-reminder' || body.toLowerCase() === '!ingatkan') {
     if (!isGroup) {
-      await client.sendMessage(chatId, '⚠️ Perintah ini hanya bisa digunakan di dalam grup.');
+      await sock.sendMessage(chatId, { text: '⚠️ Perintah ini hanya bisa digunakan di dalam grup.' }, { quoted: msg });
       return;
     }
 
-    const isAdmin = await isSenderAdmin(client, message, chatId, rawSenderId);
+    const isAdmin = await isSenderAdmin(sock, chatId, senderJid);
     if (!isAdmin) {
-      await client.sendMessage(
+      await sock.sendMessage(
         chatId,
-        '⛔ *Akses Ditolak!*\n\nPerintah `!test-reminder` hanya dapat dijalankan oleh *Admin Grup*.'
+        { text: '⛔ *Akses Ditolak!*\n\nPerintah `!test-reminder` hanya dapat dijalankan oleh *Admin Grup*.' },
+        { quoted: msg }
       );
       return;
     }
 
     console.log(`⚡ [Admin] Menjalankan pengingat manual di grup ${chatId}...`);
-    await executeReminderJob(client, chatId);
+    await executeReminderJob(sock, chatId);
     return;
   }
 
-  // Perintah !anggota atau !list (khusus Admin Grup)
+  // 3. Perintah !anggota
   if (['!anggota', '!list', '!daftar-anggota'].includes(body.toLowerCase())) {
     if (!isGroup) {
-      await client.sendMessage(chatId, '⚠️ Perintah ini hanya bisa digunakan di dalam grup.');
+      await sock.sendMessage(chatId, { text: '⚠️ Perintah ini hanya bisa digunakan di dalam grup.' }, { quoted: msg });
       return;
     }
 
-    const isAdmin = await isSenderAdmin(client, message, chatId, rawSenderId);
+    const isAdmin = await isSenderAdmin(sock, chatId, senderJid);
     if (!isAdmin) {
-      await client.sendMessage(
+      await sock.sendMessage(
         chatId,
-        '⛔ *Akses Ditolak!*\n\nPerintah `!anggota` hanya dapat diakses oleh *Admin Grup*.'
+        { text: '⛔ *Akses Ditolak!*\n\nPerintah `!anggota` hanya dapat diakses oleh *Admin Grup*.' },
+        { quoted: msg }
       );
       return;
     }
 
     const users = await User.find({ groupId: chatId, isActive: true }).sort({ name: 1 });
     if (users.length === 0) {
-      await client.sendMessage(
+      await sock.sendMessage(
         chatId,
-        '📋 *DAFTAR ANGGOTA MONEV*\n\nBelum ada anggota yang terdaftar di grup ini.\nSilakan mendaftar dengan ketik:\n*!daftar [Nama Lengkap]*'
+        { text: '📋 *DAFTAR ANGGOTA MONEV*\n\nBelum ada anggota yang terdaftar di grup ini.\nSilakan mendaftar dengan ketik:\n*!daftar [Nama Lengkap]*' },
+        { quoted: msg }
       );
       return;
     }
@@ -382,7 +182,7 @@ async function handleIncomingMessage(client, message) {
     users.forEach((u, idx) => {
       const isAttended = attendedSet.has(u._id.toString());
       const statusIcon = isAttended ? '✅ Sudah Absen' : '⏳ Belum Absen';
-      const cleanNum = (u.whatsappNumber || '').split('@')[0];
+      const cleanNum = (u.whatsappNumber || '').split('@')[0].replace(/[^0-9]/g, '');
       text += `${idx + 1}. *${u.name}* (@${cleanNum}) — ${statusIcon}\n`;
     });
 
@@ -390,22 +190,23 @@ async function handleIncomingMessage(client, message) {
     text += `\n📊 *Progres Hari Ini:* ${attendedCount}/${users.length} anggota sudah absen.`;
     text += '\n\n💡 *Tips Admin:* Ketik *!hapus [Nama]* untuk menghapus anggota dari daftar.';
 
-    await client.sendMessage(chatId, text);
+    await sock.sendMessage(chatId, { text }, { quoted: msg });
     return;
   }
 
-  // Perintah !hapus [Nama / Tag] (khusus Admin Grup)
+  // 4. Perintah !hapus [Nama / Tag]
   if (body.startsWith('!hapus')) {
     if (!isGroup) {
-      await client.sendMessage(chatId, '⚠️ Perintah ini hanya bisa digunakan di dalam grup.');
+      await sock.sendMessage(chatId, { text: '⚠️ Perintah ini hanya bisa digunakan di dalam grup.' }, { quoted: msg });
       return;
     }
 
-    const isAdmin = await isSenderAdmin(client, message, chatId, rawSenderId);
+    const isAdmin = await isSenderAdmin(sock, chatId, senderJid);
     if (!isAdmin) {
-      await client.sendMessage(
+      await sock.sendMessage(
         chatId,
-        '⛔ *Akses Ditolak!*\n\nPerintah `!hapus` hanya dapat dijalankan oleh *Admin Grup* demi menjaga keamanan data peserta.'
+        { text: '⛔ *Akses Ditolak!*\n\nPerintah `!hapus` hanya dapat dijalankan oleh *Admin Grup*.' },
+        { quoted: msg }
       );
       return;
     }
@@ -413,23 +214,17 @@ async function handleIncomingMessage(client, message) {
     const targetQuery = body.replace('!hapus', '').trim();
     let targetUser = null;
 
-    // 1. Cek apakah ada mention di pesan (misal: !hapus @Budi)
-    if (message.mentionedIds && message.mentionedIds.length > 0) {
-      const mentionedJid = typeof message.mentionedIds[0] === 'string'
-        ? message.mentionedIds[0]
-        : message.mentionedIds[0]._serialized;
-
-      const cleanMentionNum = (mentionedJid || '').split('@')[0];
+    // Cek apakah ada mention di pesan
+    const mentionedJids = msg.message.extendedTextMessage?.contextInfo?.mentionedJid || [];
+    if (mentionedJids.length > 0) {
+      const cleanMention = mentionedJids[0].split('@')[0].replace(/[^0-9]/g, '');
       targetUser = await User.findOne({
         groupId: chatId,
-        $or: [
-          { whatsappNumber: mentionedJid },
-          { whatsappNumber: { $regex: cleanMentionNum } }
-        ]
+        whatsappNumber: { $regex: cleanMention }
       });
     }
 
-    // 2. Jika tidak mention, cari berdasarkan Nama (pencarian teks fleksibel)
+    // Jika tidak mention, cari nama
     if (!targetUser && targetQuery) {
       targetUser = await User.findOne({
         groupId: chatId,
@@ -445,9 +240,12 @@ async function handleIncomingMessage(client, message) {
     }
 
     if (!targetUser) {
-      await client.sendMessage(
+      await sock.sendMessage(
         chatId,
-        '⚠️ Anggota tidak ditemukan!\n\nCara penggunaan:\n• *!hapus @tag_orangnya*\n• *!hapus [Nama Lengkap]* (Contoh: `!hapus Budi Santoso`)\n\nKetik *!anggota* untuk melihat daftar nama yang terdaftar.'
+        {
+          text: '⚠️ Anggota tidak ditemukan!\n\nCara penggunaan:\n• *!hapus @tag_orangnya*\n• *!hapus [Nama Lengkap]* (Contoh: `!hapus Budi Santoso`)\n\nKetik *!anggota* untuk melihat daftar.'
+        },
+        { quoted: msg }
       );
       return;
     }
@@ -455,134 +253,150 @@ async function handleIncomingMessage(client, message) {
     const removedName = targetUser.name;
     const removedId = targetUser._id;
 
-    // Hapus data pengguna & riwayat log absensinya dari database
     await User.deleteOne({ _id: removedId });
     await AttendanceLog.deleteMany({ user: removedId });
 
-    await client.sendMessage(
+    await sock.sendMessage(
       chatId,
-      `✅ Anggota *${removedName}* berhasil dihapus dari sistem pengingat Monev grup ini.`
+      { text: `✅ Anggota *${removedName}* berhasil dihapus dari sistem pengingat grup ini.` },
+      { quoted: msg }
     );
     return;
   }
 
-  // Resolusi nomor HP asli untuk perintah yang membutuhkan data user (!daftar dan !sudah)
-  const senderId = await resolvePhoneNumber(client, rawSenderId);
-
-  // Perintah !daftar [Nama]
+  // 5. Perintah !daftar [Nama]
   if (body.startsWith('!daftar')) {
     if (!isGroup) {
-      await message.reply('⚠️ Perintah ini harus dijalankan di dalam grup WhatsApp Magangers.');
+      await sock.sendMessage(chatId, { text: '⚠️ Perintah ini harus dijalankan di dalam grup WhatsApp Magangers.' }, { quoted: msg });
       return;
     }
 
     const name = body.replace('!daftar', '').trim();
     if (!name) {
-      await message.reply('⚠️ Format salah! Gunakan: *!daftar [Nama Lengkap]*\nContoh: *!daftar Budi Santoso*');
+      await sock.sendMessage(
+        chatId,
+        { text: '⚠️ Format salah! Gunakan: *!daftar [Nama Lengkap]*\nContoh: *!daftar Budi Santoso*' },
+        { quoted: msg }
+      );
       return;
     }
 
-    // Cek apakah nomor sudah terdaftar (baik via nomor ter-resolve maupun ID mentah sebelumnya)
+    const cleanSender = senderJid.split('@')[0].replace(/[^0-9]/g, '');
+    const userJid = `${cleanSender}@s.whatsapp.net`;
+
     const existingUser = await User.findOne({
-      $or: [{ whatsappNumber: senderId }, { whatsappNumber: rawSenderId }]
+      whatsappNumber: { $regex: cleanSender }
     });
 
     if (existingUser) {
-      // Perbarui nomor ke format asli jika sebelumnya tersimpan sebagai @lid
-      if (existingUser.whatsappNumber !== senderId) {
-        existingUser.whatsappNumber = senderId;
-      }
-
-      // Jika sudah terdaftar tapi grupnya berubah, perbarui groupId
+      existingUser.whatsappNumber = userJid;
       if (existingUser.groupId !== chatId || !existingUser.isActive) {
         existingUser.groupId = chatId;
         existingUser.name = name;
         existingUser.isActive = true;
         await existingUser.save();
-        await client.sendMessage(
+        await sock.sendMessage(
           chatId,
-          `${getMentionHandle(senderId)} Data pendaftaranmu berhasil diperbarui untuk grup ini!`,
-          { mentions: [senderId] }
+          {
+            text: `${getMentionHandle(userJid)} Data pendaftaranmu berhasil diperbarui untuk grup ini!`,
+            mentions: [userJid]
+          },
+          { quoted: msg }
         );
         return;
       }
 
       existingUser.name = name;
       await existingUser.save();
-      await client.sendMessage(
+      await sock.sendMessage(
         chatId,
-        `${getMentionHandle(senderId)} Kamu sudah terdaftar sebelumnya dengan nama *${existingUser.name}* di grup ini.`,
-        { mentions: [senderId] }
+        {
+          text: `${getMentionHandle(userJid)} Kamu sudah terdaftar sebelumnya dengan nama *${existingUser.name}* di grup ini.`,
+          mentions: [userJid]
+        },
+        { quoted: msg }
       );
       return;
     }
 
-    // Daftarkan user baru dengan nomor yang sudah ter-resolve
+    // Daftarkan user baru
     await User.create({
       name,
-      whatsappNumber: senderId,
+      whatsappNumber: userJid,
       groupId: chatId,
       isActive: true
     });
 
-    const replyText = `${getMentionHandle(senderId)} Berhasil terdaftar! Sistem akan mengingatkanmu di grup ini jika kamu belum absen Monev.`;
-    await client.sendMessage(chatId, replyText, { mentions: [senderId] });
+    await sock.sendMessage(
+      chatId,
+      {
+        text: `${getMentionHandle(userJid)} Berhasil terdaftar! Sistem akan mengingatkanmu di grup ini jika belum absen Monev.`,
+        mentions: [userJid]
+      },
+      { quoted: msg }
+    );
     return;
   }
 
-  // Perintah !sudah
+  // 6. Perintah !sudah
   if (body.toLowerCase() === '!sudah') {
     if (!isGroup) {
-      await message.reply('⚠️ Konfirmasi absen harus dilakukan di grup WhatsApp.');
+      await sock.sendMessage(chatId, { text: '⚠️ Konfirmasi absen harus dilakukan di grup WhatsApp.' }, { quoted: msg });
       return;
     }
 
-    // 1. Cari User berdasarkan whatsappNumber (mendukung senderId ter-resolve maupun ID lama)
+    const cleanSender = senderJid.split('@')[0].replace(/[^0-9]/g, '');
+    const userJid = `${cleanSender}@s.whatsapp.net`;
+
     const user = await User.findOne({
-      $or: [{ whatsappNumber: senderId }, { whatsappNumber: rawSenderId }]
+      whatsappNumber: { $regex: cleanSender }
     });
 
     if (!user) {
-      await client.sendMessage(
+      await sock.sendMessage(
         chatId,
-        `${getMentionHandle(senderId)} Kamu belum terdaftar dalam sistem bot. Silakan daftar terlebih dahulu dengan ketik:\n*!daftar [Nama]*`,
-        { mentions: [senderId] }
+        {
+          text: `${getMentionHandle(userJid)} Kamu belum terdaftar dalam sistem bot. Silakan daftar terlebih dahulu dengan ketik:\n*!daftar [Nama]*`,
+          mentions: [userJid]
+        },
+        { quoted: msg }
       );
       return;
     }
 
-    // Perbarui nomor ke format asli jika sebelumnya tersimpan sebagai @lid
-    if (user.whatsappNumber !== senderId) {
-      user.whatsappNumber = senderId;
+    // Perbarui format nomor jika sebelumnya tersimpan beda
+    if (user.whatsappNumber !== userJid) {
+      user.whatsappNumber = userJid;
       await user.save();
     }
 
     const { startOfDay, endOfDay } = getJakartaDateRange();
 
-    // Cek apakah sudah konfirmasi hari ini
     const existingLog = await AttendanceLog.findOne({
       user: user._id,
       date: { $gte: startOfDay, $lte: endOfDay }
     });
 
     if (existingLog) {
-      await client.sendMessage(
+      await sock.sendMessage(
         chatId,
-        `${getMentionHandle(senderId)} Kamu sudah mengonfirmasi absen Monev untuk hari ini. Terima kasih! 👍`,
-        { mentions: [senderId] }
+        {
+          text: `${getMentionHandle(userJid)} Kamu sudah mengonfirmasi absen Monev untuk hari ini. Terima kasih! 👍`,
+          mentions: [userJid]
+        },
+        { quoted: msg }
       );
       return;
     }
 
-    // 2. Buat AttendanceLog dengan tanggal hari ini
+    // Buat log absensi hari ini
     await AttendanceLog.create({
       user: user._id,
       date: new Date(),
       status: 'confirmed'
     });
 
-    // 3. Cek All-Clear di grup ini
-    // Ambil semua user aktif di grup ini
+    // Cek status grup
     const activeUsersInGroup = await User.find({
       groupId: chatId,
       isActive: true
@@ -591,46 +405,52 @@ async function handleIncomingMessage(client, message) {
     const totalActiveCount = activeUsersInGroup.length;
     const userIdsInGroup = activeUsersInGroup.map((u) => u._id);
 
-    // Hitung berapa user di grup ini yang sudah memiliki AttendanceLog hari ini
-    const distinctAttendedUsersToday = await AttendanceLog.distinct('user', {
+    const distinctAttendedToday = await AttendanceLog.distinct('user', {
       user: { $in: userIdsInGroup },
       date: { $gte: startOfDay, $lte: endOfDay }
     });
 
-    const completedCount = distinctAttendedUsersToday.length;
+    const completedCount = distinctAttendedToday.length;
 
-    // Jika semua user aktif di grup sudah absen
     if (totalActiveCount > 0 && completedCount >= totalActiveCount) {
       const allClearMessage =
-        '🎉 Mantep Gaiss! Semua anggota grup Magangers sudah absen Monev Maganghub hari ini.\n\n' +
+        '🎉 Mantap Gaiss! Semua anggota grup Magangers sudah absen Monev Maganghub hari ini.\n\n' +
         'Tetap semangat gaiss! Rezeki yang sudah tertakar, tidak mungkin tertukar. ✨';
-
-      await client.sendMessage(chatId, allClearMessage);
+      await sock.sendMessage(chatId, { text: allClearMessage });
     } else {
       const remaining = Math.max(0, totalActiveCount - completedCount);
       const ackMessage =
-        `${getMentionHandle(senderId)} Absen Monev kamu hari ini berhasil dicatat! ✅\n` +
+        `${getMentionHandle(userJid)} Absen Monev kamu hari ini berhasil dicatat! ✅\n` +
         `📊 Progress grup: *${completedCount}/${totalActiveCount}* anggota sudah absen (${remaining} orang lagi).`;
-
-      await client.sendMessage(chatId, ackMessage, { mentions: [senderId] });
+      await sock.sendMessage(chatId, { text: ackMessage, mentions: [userJid] }, { quoted: msg });
     }
     return;
   }
 
-  // Perintah !keluar (anggota menghapus diri sendiri dari pengingat grup)
+  // 7. Perintah !keluar
   if (body.toLowerCase() === '!keluar' || body.toLowerCase() === '!unregister') {
     if (!isGroup) {
-      await client.sendMessage(chatId, '⚠️ Perintah ini hanya bisa digunakan di dalam grup.');
+      await sock.sendMessage(chatId, { text: '⚠️ Perintah ini hanya bisa digunakan di dalam grup.' }, { quoted: msg });
       return;
     }
 
+    const cleanSender = senderJid.split('@')[0].replace(/[^0-9]/g, '');
+    const userJid = `${cleanSender}@s.whatsapp.net`;
+
     const user = await User.findOne({
       groupId: chatId,
-      $or: [{ whatsappNumber: senderId }, { whatsappNumber: rawSenderId }]
+      whatsappNumber: { $regex: cleanSender }
     });
 
     if (!user) {
-      await client.sendMessage(chatId, `${getMentionHandle(senderId)} Kamu belum terdaftar dalam sistem bot di grup ini.`);
+      await sock.sendMessage(
+        chatId,
+        {
+          text: `${getMentionHandle(userJid)} Kamu belum terdaftar dalam sistem bot di grup ini.`,
+          mentions: [userJid]
+        },
+        { quoted: msg }
+      );
       return;
     }
 
@@ -638,14 +458,17 @@ async function handleIncomingMessage(client, message) {
     await User.deleteOne({ _id: user._id });
     await AttendanceLog.deleteMany({ user: user._id });
 
-    await client.sendMessage(
+    await sock.sendMessage(
       chatId,
-      `✅ *${removedName}* telah berhasil keluar dan dihapus dari sistem pengingat grup ini.`
+      { text: `✅ *${removedName}* telah berhasil keluar dan dihapus dari sistem pengingat grup ini.` },
+      { quoted: msg }
     );
     return;
   }
 }
 
 module.exports = {
-  registerWhatsAppEvents
+  handleMessage,
+  getIntroductionMessage,
+  toBaileysJid
 };

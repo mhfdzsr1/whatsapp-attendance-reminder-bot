@@ -36,9 +36,9 @@ function getJakartaHour() {
 /**
  * Inisialisasi cron scheduler untuk pengingat absensi Monev
  * Jadwal: Jam 16:00 sampai 23:00 setiap hari kerja (Senin - Jumat)
- * @param {import('whatsapp-web.js').Client} client
+ * @param {any} sock Baileys socket client
  */
-function startCronScheduler(client) {
+function startCronScheduler(sock) {
   // Pola cron: 0 16-23 * * 1-5 (Menit 0, jam 16-23, Senin-Jumat)
   const cronPattern = '0 16-23 * * 1-5';
 
@@ -48,7 +48,7 @@ function startCronScheduler(client) {
     cronPattern,
     async () => {
       try {
-        await executeReminderJob(client);
+        await executeReminderJob(sock);
       } catch (error) {
         console.error('❌ Terjadi kesalahan pada cron reminder job:', error);
       }
@@ -62,31 +62,14 @@ function startCronScheduler(client) {
 /**
  * Format dan kirim pesan pengingat ke satu grup
  */
-async function sendReminderToGroup(client, groupId, users, currentHour) {
+async function sendReminderToGroup(sock, groupId, users, currentHour) {
   const mentions = [];
   const mentionLines = [];
 
   for (const user of users) {
-    let resolvedNumber = user.whatsappNumber;
-
-    if (user.whatsappNumber && user.whatsappNumber.endsWith('@lid')) {
-      try {
-        if (typeof client.getContactLidAndPhone === 'function') {
-          const res = await client.getContactLidAndPhone([user.whatsappNumber]);
-          if (res && res[0] && res[0].pn) {
-            resolvedNumber = res[0].pn;
-            user.whatsappNumber = resolvedNumber;
-            await user.save();
-            console.log(`✅ Berhasil mengonversi LID ${user.name} ke nomor HP asli: ${resolvedNumber}`);
-          }
-        }
-      } catch (err) {
-        console.warn(`Gagal resolve nomor telepon untuk ${user.whatsappNumber}:`, err.message);
-      }
-    }
-
-    mentions.push(resolvedNumber);
-    const cleanNumber = (resolvedNumber || '').split('@')[0];
+    const cleanNumber = (user.whatsappNumber || '').split('@')[0].replace(/[^0-9]/g, '');
+    const userJid = `${cleanNumber}@s.whatsapp.net`;
+    mentions.push(userJid);
     mentionLines.push(`• @${cleanNumber} (${user.name})`);
   }
 
@@ -122,7 +105,10 @@ async function sendReminderToGroup(client, groupId, users, currentHour) {
   }
 
   try {
-    await client.sendMessage(groupId, reminderText, { mentions });
+    await sock.sendMessage(groupId, {
+      text: reminderText,
+      mentions
+    });
     console.log(`📨 Pengingat terkirim ke grup ${groupId} (${users.length} anggota dimention).`);
   } catch (sendError) {
     console.error(`❌ Gagal mengirim pesan ke grup ${groupId}:`, sendError.message);
@@ -131,10 +117,10 @@ async function sendReminderToGroup(client, groupId, users, currentHour) {
 
 /**
  * Logika eksekusi pengingat absensi ke grup WhatsApp
- * @param {import('whatsapp-web.js').Client} client
+ * @param {any} sock Baileys socket client
  * @param {string|null} targetGroupId - ID grup jika dipicu secara manual via !test-reminder
  */
-async function executeReminderJob(client, targetGroupId = null) {
+async function executeReminderJob(sock, targetGroupId = null) {
   const currentHour = getJakartaHour();
   console.log(`\n🔔 Menjalankan pengingat absensi untuk jam: ${currentHour}:00 WIB ${targetGroupId ? `(Target Grup: ${targetGroupId})` : '(Semua Grup)'}`);
 
@@ -150,10 +136,9 @@ async function executeReminderJob(client, targetGroupId = null) {
     const totalUsersInGroup = await User.find({ groupId: targetGroupId, isActive: true });
 
     if (totalUsersInGroup.length === 0) {
-      await client.sendMessage(
-        targetGroupId,
-        'ℹ️ Belum ada anggota yang terdaftar aktif di grup ini.\nSilakan anggota mendaftar terlebih dahulu dengan mengetik:\n*!daftar [Nama Lengkap]*'
-      );
+      await sock.sendMessage(targetGroupId, {
+        text: 'ℹ️ Belum ada anggota yang terdaftar aktif di grup ini.\nSilakan anggota mendaftar terlebih dahulu dengan mengetik:\n*!daftar [Nama Lengkap]*'
+      });
       return;
     }
 
@@ -168,13 +153,13 @@ async function executeReminderJob(client, targetGroupId = null) {
         '🎉 *Mantap Gaiss! Semua Sudah Absen!*\n\n' +
         `Seluruh anggota yang terdaftar di grup ini (*${total}/${total}* orang) terpantau *sudah menyelesaikan absen* Monev Maganghub hari ini.\n\n` +
         '✨ Tidak ada yang perlu diingatkan lagi kecuali ibadah';
-      await client.sendMessage(targetGroupId, allClearText);
+      await sock.sendMessage(targetGroupId, { text: allClearText });
       console.log(`✨ Semua anggota di grup ${targetGroupId} sudah absen hari ini. Pesan konfirmasi sukses terkirim.`);
       return;
     }
 
     // Jika masih ada yang belum absen di grup ini
-    await sendReminderToGroup(client, targetGroupId, uncompletedInGroup, currentHour);
+    await sendReminderToGroup(sock, targetGroupId, uncompletedInGroup, currentHour);
     return;
   }
 
@@ -201,7 +186,7 @@ async function executeReminderJob(client, targetGroupId = null) {
   // Loop setiap grup dan kirim pesan pengingat
   for (const [groupId, users] of Object.entries(groupedByGroup)) {
     if (!users || users.length === 0) continue;
-    await sendReminderToGroup(client, groupId, users, currentHour);
+    await sendReminderToGroup(sock, groupId, users, currentHour);
   }
 }
 
@@ -211,4 +196,3 @@ module.exports = {
   getJakartaDateRange,
   getJakartaHour
 };
-

@@ -1,63 +1,45 @@
-// Gunakan DNS resolver Google untuk mencegah error querySrv EBADRESP di jaringan/ISP tertentu
+// Gunakan DNS resolver Google untuk mencegah error querySrv EBADRESP
 try {
   require('dns').setServers(['8.8.8.8', '8.8.4.4']);
-} catch (e) {
-  // Abaikan jika tidak diizinkan di env tertentu
-}
-
-// Jalankan patch otomatis untuk whatsapp-web.js sebelum dimuat ke memori
-try {
-  require('./patch');
-} catch (e) {
-  console.warn('⚠️ Gagal menjalankan patch runtime:', e.message);
-}
+} catch (e) {}
 
 require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
 const express = require('express');
 const mongoose = require('mongoose');
-const { Client, RemoteAuth } = require('whatsapp-web.js');
-const { MongoStore } = require('wwebjs-mongo');
-const { registerWhatsAppEvents } = require('./whatsappService');
+const pino = require('pino');
+const qrcode = require('qrcode');
+const qrcodeTerminal = require('qrcode-terminal');
+
+const {
+  default: makeWASocket,
+  useMultiFileAuthState,
+  DisconnectReason,
+  fetchLatestBaileysVersion
+} = require('@whiskeysockets/baileys');
+
+const { restoreAuthFromMongo, backupAuthToMongo, clearAuth } = require('./mongoAuth');
+const { handleMessage, getIntroductionMessage } = require('./whatsappService');
 const { startCronScheduler, executeReminderJob, getJakartaDateRange } = require('./cronService');
 const User = require('./models/User');
 const AttendanceLog = require('./models/AttendanceLog');
 
-/**
- * Mencari path Google Chrome atau Edge yang terpasang di sistem
- */
-function getExecutablePath() {
-  if (process.env.PUPPETEER_EXECUTABLE_PATH) {
-    return process.env.PUPPETEER_EXECUTABLE_PATH;
-  }
-  const possiblePaths = [
-    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
-    'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
-    '/usr/bin/google-chrome-stable',
-    '/usr/bin/google-chrome',
-    '/usr/bin/chromium',
-    '/usr/bin/chromium-browser'
-  ];
-  for (const p of possiblePaths) {
-    if (fs.existsSync(p)) return p;
-  }
-  return undefined;
-}
-
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 const MONGODB_URI = process.env.MONGODB_URI;
-let waClient = null;
 
-// Middleware JSON & URL-Encoded
+let sock = null;
+let lastQR = null;
+let isReady = false;
+let isCronStarted = false;
+const authDir = path.join(process.cwd(), 'baileys_auth');
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 /**
- * 4.A Express Keep-Alive Endpoints
- * Endpoint /ping digunakan untuk keep-alive oleh cron-job.org / UptimeRobot
+ * Endpoint Keep-Alive untuk cron-job.org / UptimeRobot
  */
 app.get('/ping', (req, res) => {
   res.status(200).json({
@@ -67,27 +49,29 @@ app.get('/ping', (req, res) => {
   });
 });
 
+/**
+ * Endpoint Status Bot & Penggunaan Memori
+ */
 app.get('/status', (req, res) => {
-  const isReady = !!(waClient && waClient.info);
   res.status(200).json({
-    status: isReady ? 'READY' : 'CONNECTING',
+    status: isReady ? 'READY' : (lastQR ? 'WAITING_QR_SCAN' : 'CONNECTING'),
     isReady,
-    info: waClient && waClient.info ? {
-      wid: waClient.info.wid ? waClient.info.wid._serialized : null,
-      pushname: waClient.info.pushname || null
-    } : null,
+    user: sock?.user || null,
     uptimeSec: Math.round(process.uptime()),
     memoryUsageMB: Math.round(process.memoryUsage().rss / 1024 / 1024),
     timestamp: new Date().toISOString()
   });
 });
 
+/**
+ * Endpoint Tes Pengingat Manual via Web
+ */
 app.get('/test-reminder', async (req, res) => {
-  if (!waClient) {
-    return res.status(503).json({ error: 'WhatsApp client belum siap.' });
+  if (!sock || !isReady) {
+    return res.status(503).json({ error: 'WhatsApp client belum siap / belum terhubung.' });
   }
   try {
-    await executeReminderJob(waClient);
+    await executeReminderJob(sock);
     res.status(200).json({ status: 'OK', message: 'Pengingat berhasil dijalankan!' });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -95,22 +79,21 @@ app.get('/test-reminder', async (req, res) => {
 });
 
 /**
- * Endpoint Visual Live Screenshot WhatsApp Web di Cloud (Super-Lean)
- * Dibuat sangat ringan tanpa auto-loop agar RAM 512MB selalu aman
+ * Tampilan Web Live QR Scanner (Zero-Chromium / Super Ringan)
  */
-app.get('/screenshot', async (req, res) => {
+app.get(['/screenshot', '/qr'], async (req, res) => {
   if (req.query.raw === '1') {
-    if (!waClient || !waClient.pupPage) {
-      return res.status(503).send('Browser belum siap.');
+    if (!lastQR) {
+      return res.status(404).send(isReady ? 'WhatsApp Sudah Terhubung.' : 'QR belum tersedia.');
     }
-    try {
-      // Gunakan JPEG terkompresi (70% kualitas) agar hemat buffer RAM
-      const screenshot = await waClient.pupPage.screenshot({ type: 'jpeg', quality: 70 });
-      res.contentType('image/jpeg').send(screenshot);
-    } catch (err) {
-      res.status(500).send(`Error: ${err.message}`);
-    }
+    const qrBuffer = await qrcode.toBuffer(lastQR, { width: 400, margin: 2 });
+    res.contentType('image/png').send(qrBuffer);
     return;
+  }
+
+  let qrImgSrc = '';
+  if (lastQR) {
+    qrImgSrc = await qrcode.toDataURL(lastQR, { width: 350, margin: 2 });
   }
 
   res.send(`
@@ -118,73 +101,48 @@ app.get('/screenshot', async (req, res) => {
     <html lang="id">
     <head>
       <meta charset="UTF-8">
-      <title>WhatsApp Web Live Scanner</title>
+      <title>WhatsApp Web QR Scanner (Baileys)</title>
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
       <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; text-align: center; background: #111b21; color: #e9edef; margin: 0; padding: 20px; }
-        .card { max-width: 650px; margin: 0 auto; background: #202c33; padding: 24px; border-radius: 12px; box-shadow: 0 4px 16px rgba(0,0,0,0.6); }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; text-align: center; background: #111b21; color: #e9edef; margin: 0; padding: 24px; }
+        .card { max-width: 500px; margin: 0 auto; background: #202c33; padding: 28px; border-radius: 12px; box-shadow: 0 4px 16px rgba(0,0,0,0.6); }
         h2 { margin-top: 0; color: #00a884; }
-        img { max-width: 100%; height: auto; border-radius: 8px; border: 2px solid #2a3942; background: #fff; }
-        .btn-group { margin-top: 16px; display: flex; justify-content: center; gap: 12px; }
-        .btn { padding: 12px 24px; background: #00a884; color: #fff; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 15px; border: none; cursor: pointer; transition: 0.2s; }
-        .btn-secondary { background: #374151; }
+        img { border-radius: 8px; border: 4px solid #00a884; background: #fff; max-width: 100%; height: auto; }
+        .btn { padding: 12px 24px; background: #00a884; color: #fff; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 15px; border: none; cursor: pointer; transition: 0.2s; display: inline-block; margin-top: 16px; }
         .btn:hover { opacity: 0.9; }
-        .note { font-size: 14px; color: #8696a0; margin-bottom: 16px; }
+        .status-box { padding: 12px; border-radius: 8px; margin: 16px 0; font-size: 15px; font-weight: 500; }
+        .connected { background: #064e3b; color: #6ee7b7; border: 1px solid #059669; }
+        .waiting { background: #374151; color: #e5e7eb; border: 1px solid #4b5563; }
+        .note { font-size: 13px; color: #8696a0; margin-top: 14px; line-height: 1.5; }
       </style>
     </head>
     <body>
       <div class="card">
-        <h2>📷 WhatsApp Web Live Scanner</h2>
-        <p class="note">Arahkan kamera WhatsApp HP Anda ke QR code di bawah. Klik tombol untuk memuat ulang jika QR kadaluarsa.</p>
-        <img id="screen" src="/screenshot?raw=1" alt="Memuat tampilan WhatsApp Web...">
-        <div class="btn-group">
-          <button class="btn btn-secondary" onclick="refreshScreen()">🔄 Segarkan Tampilan</button>
-          <button class="btn" onclick="reloadQR()">⚡ Buat QR Baru</button>
-        </div>
+        <h2>📱 WhatsApp Bot Scanner</h2>
+        ${
+          isReady
+            ? `<div class="status-box connected">✅ Bot WhatsApp SUDAH TERHUBUNG & AKTIF!<br><small>Nomor: +${(sock?.user?.id || '').split(':')[0]}</small></div>
+               <p class="note">Bot sedang memantau grup dan siap menjalankan pengingat harian secara otomatis.</p>`
+            : qrImgSrc
+            ? `<div class="status-box waiting">⚡ Pindai QR Code di bawah menggunakan WhatsApp Anda</div>
+               <img src="${qrImgSrc}" alt="QR Code WhatsApp">
+               <p class="note">Buka WhatsApp > Titik Tiga / Pengaturan > <b>Perangkat Tertaut</b> > <b>Tautkan Perangkat</b>.</p>
+               <button class="btn" onclick="location.reload()">🔄 Segarkan QR</button>`
+            : `<div class="status-box waiting">⏳ Sedang menyiapkan koneksi WhatsApp...</div>
+               <p class="note">Halaman akan otomatis memuat ulang dalam beberapa detik.</p>
+               <script>setTimeout(() => location.reload(), 3000);</script>`
+        }
       </div>
-      <script>
-        function refreshScreen() {
-          document.getElementById('screen').src = '/screenshot?raw=1&t=' + Date.now();
-        }
-        async function reloadQR() {
-          await fetch('/reload-qr');
-          setTimeout(refreshScreen, 1200);
-        }
-      </script>
+      ${!isReady && qrImgSrc ? '<script>setTimeout(() => location.reload(), 15000);</script>' : ''}
     </body>
     </html>
   `);
 });
 
-app.get('/reload-qr', async (req, res) => {
-  if (!waClient || !waClient.pupPage) {
-    return res.json({ status: 'ERR', message: 'Client belum siap.' });
-  }
-  try {
-    await waClient.pupPage.evaluate(() => {
-      const btn = document.querySelector('div[role="button"]') || document.querySelector('button') || document.querySelector('span[data-icon="refresh"]')?.parentElement;
-      if (btn) btn.click();
-    });
-    res.json({ status: 'OK' });
-  } catch (err) {
-    res.json({ status: 'ERR', error: err.message });
-  }
-});
-
-app.get('/', (req, res) => {
-  res.status(200).json({
-    name: 'WA Bot Monev Reminder Maganghub',
-    status: 'Running',
-    uptime: process.uptime(),
-    timestamp: new Date().toISOString()
-  });
-});
-
 /**
- * Web Dashboard / Endpoint Daftar Anggota Terdaftar
- * Dapat diakses via browser: http://localhost:3000/anggota
+ * Web Dashboard Daftar Anggota Terdaftar
  */
-app.get(['/anggota', '/users'], async (req, res) => {
+app.get(['/', '/anggota', '/users'], async (req, res) => {
   try {
     const users = await User.find({ isActive: true }).sort({ name: 1 });
     const { startOfDay, endOfDay } = getJakartaDateRange();
@@ -195,30 +153,13 @@ app.get(['/anggota', '/users'], async (req, res) => {
     });
     const attendedSet = new Set(attendedUserIds.map((id) => id.toString()));
 
-    // Format JSON jika diminta melalui query parameter (?format=json)
-    if (req.query.format === 'json') {
-      return res.status(200).json({
-        total: users.length,
-        alreadyAttendedToday: attendedSet.size,
-        users: users.map((u) => ({
-          id: u._id,
-          name: u.name,
-          whatsappNumber: u.whatsappNumber,
-          groupId: u.groupId,
-          attendedToday: attendedSet.has(u._id.toString()),
-          registeredAt: u.createdAt
-        }))
-      });
-    }
-
-    // Tampilan HTML Dashboard untuk dibuka di browser oleh admin
     const rows = users
       .map((u, i) => {
         const isAttended = attendedSet.has(u._id.toString());
         const badge = isAttended
           ? '<span style="background:#dcfce7;color:#166534;padding:4px 10px;border-radius:12px;font-weight:600;font-size:12px;">✅ Sudah Absen</span>'
           : '<span style="background:#fee2e2;color:#991b1b;padding:4px 10px;border-radius:12px;font-weight:600;font-size:12px;">⏳ Belum Absen</span>';
-        const cleanNum = (u.whatsappNumber || '').split('@')[0];
+        const cleanNum = (u.whatsappNumber || '').split('@')[0].replace(/[^0-9]/g, '');
         const dateStr = u.createdAt ? new Date(u.createdAt).toLocaleDateString('id-ID', { dateStyle: 'medium' }) : '-';
         return `
           <tr style="border-bottom:1px solid #e5e7eb;">
@@ -277,7 +218,7 @@ app.get(['/anggota', '/users'], async (req, res) => {
             </tbody>
           </table>
           <div class="footer">
-            Data diperbarui secara otomatis dari MongoDB Atlas • <a href="/ping" style="color:#2563eb;text-decoration:none;">Status Server</a>
+            Data diperbarui secara otomatis dari MongoDB Atlas • <a href="/qr" style="color:#2563eb;text-decoration:none;">Status Bot</a> • <a href="/ping" style="color:#2563eb;text-decoration:none;">Ping</a>
           </div>
         </div>
       </body>
@@ -291,7 +232,112 @@ app.get(['/anggota', '/users'], async (req, res) => {
 });
 
 /**
- * Inisialisasi Koneksi Database dan WhatsApp Client
+ * Menghubungkan ke WhatsApp menggunakan Baileys
+ */
+async function connectToWhatsApp() {
+  console.log('🤖 Menginisialisasi koneksi Baileys (Zero-Chromium)...');
+
+  // Pulihkan auth dari MongoDB Atlas ke folder lokal
+  await restoreAuthFromMongo(authDir);
+
+  const { state, saveCreds } = await useMultiFileAuthState(authDir);
+  const { version } = await fetchLatestBaileysVersion();
+
+  console.log(`🌐 Menggunakan Baileys WA Web Version: ${version.join('.')}`);
+
+  sock = makeWASocket({
+    version,
+    auth: state,
+    printQRInTerminal: false,
+    logger: pino({ level: 'silent' }), // Silent logger agar logs bersih
+    browser: ['Ubuntu', 'Chrome', '20.0.04']
+  });
+
+  // Listener event kredensial
+  sock.ev.on('creds.update', async () => {
+    await saveCreds();
+    await backupAuthToMongo(authDir);
+  });
+
+  // Listener status koneksi & QR code
+  sock.ev.on('connection.update', async (update) => {
+    const { connection, lastDisconnect, qr } = update;
+
+    if (qr) {
+      lastQR = qr;
+      console.log('\n======================================================');
+      console.log('⚡ QR Code Baileys diterima. Pindai menggunakan WhatsApp:');
+      console.log('======================================================\n');
+      qrcodeTerminal.generate(qr, { small: true });
+      console.log('📱 Bisa scan langsung di terminal atau buka di browser:');
+      console.log('👉 https://wa-bot-monev-maganghub-reminder.onrender.com/qr\n');
+    }
+
+    if (connection === 'close') {
+      isReady = false;
+      const statusCode = lastDisconnect?.error?.output?.statusCode;
+      const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+
+      console.warn(`⚠️ Koneksi terputus (Status: ${statusCode}). Mencoba rekoneksi: ${shouldReconnect}`);
+
+      if (statusCode === DisconnectReason.loggedOut) {
+        console.warn('🚪 Akun keluar (Logged Out). Membersihkan sesi...');
+        await clearAuth(authDir);
+      }
+
+      if (shouldReconnect) {
+        setTimeout(connectToWhatsApp, 3000);
+      }
+    } else if (connection === 'open') {
+      isReady = true;
+      lastQR = null;
+      console.log('🚀 WhatsApp Bot (Baileys) Berhasil Terhubung & Siap Digunakan!');
+      await backupAuthToMongo(authDir);
+
+      if (!isCronStarted) {
+        isCronStarted = true;
+        startCronScheduler(sock);
+      }
+    }
+  });
+
+  // Listener pesan masuk
+  sock.ev.on('messages.upsert', async ({ messages, type }) => {
+    if (type !== 'notify') return;
+    for (const msg of messages) {
+      try {
+        await handleMessage(sock, msg);
+      } catch (err) {
+        console.error('❌ Error saat memproses pesan:', err);
+      }
+    }
+  });
+
+  // Listener saat bot diundang masuk ke dalam grup
+  sock.ev.on('group-participants.update', async ({ id, participants, action }) => {
+    try {
+      if (action === 'add') {
+        const botJid = sock.user?.id ? sock.user.id.split(':')[0] + '@s.whatsapp.net' : null;
+        if (botJid && participants.includes(botJid)) {
+          console.log(`🎉 Bot baru saja diundang ke grup: ${id}. Mengirim pesan perkenalan...`);
+          await sock.sendMessage(id, { text: getIntroductionMessage() });
+        }
+      }
+    } catch (e) {
+      console.warn('Gagal menangani event group-participants.update:', e.message);
+    }
+  });
+
+  // Backup berkala sesi ke MongoDB Atlas setiap 5 menit
+  setInterval(() => {
+    if (isReady) {
+      backupAuthToMongo(authDir);
+    }
+  }, 300000);
+}
+
+/**
+ * Bootstrap Utama Aplikasi
  */
 async function bootstrap() {
   if (!MONGODB_URI) {
@@ -300,10 +346,12 @@ async function bootstrap() {
   }
 
   try {
-    // 1. Jalankan Express Server terlebih dahulu
+    // 1. Jalankan Express Server
     app.listen(PORT, () => {
       console.log(`🌐 Express server berjalan pada port ${PORT}`);
       console.log(`📡 Keep-alive endpoint: http://localhost:${PORT}/ping`);
+      console.log(`📊 Dashboard anggota : http://localhost:${PORT}/anggota`);
+      console.log(`📷 Tampilan QR Code  : http://localhost:${PORT}/qr`);
     });
 
     // 2. Hubungkan ke MongoDB Atlas
@@ -311,200 +359,12 @@ async function bootstrap() {
     await mongoose.connect(MONGODB_URI);
     console.log('✅ Terhubung ke MongoDB Atlas!');
 
-    // 3. Inisialisasi MongoStore untuk RemoteAuth
-    console.log('📦 Menginisialisasi MongoStore untuk RemoteAuth...');
-    const authDir = path.join(process.cwd(), '.wwebjs_auth');
-    if (!fs.existsSync(authDir)) {
-      fs.mkdirSync(authDir, { recursive: true });
-    }
-
-    const store = new MongoStore({ mongoose: mongoose });
-
-    // Override store.extract: memastikan folder tujuan ada sebelum stream unduh dari MongoDB dimulai
-    store.extract = async function (options) {
-      if (options.path) {
-        const targetDir = path.dirname(options.path);
-        if (!fs.existsSync(targetDir)) {
-          fs.mkdirSync(targetDir, { recursive: true });
-        }
-      }
-
-      const bucket = new mongoose.mongo.GridFSBucket(mongoose.connection.db, {
-        bucketName: `whatsapp-${options.session}`
-      });
-
-      return new Promise((resolve, reject) => {
-        const downloadStream = bucket.openDownloadStreamByName(`${options.session}.zip`);
-        const writeStream = fs.createWriteStream(options.path);
-
-        downloadStream
-          .pipe(writeStream)
-          .on('error', (err) => reject(err))
-          .on('finish', () => resolve())
-          .on('close', () => resolve());
-      });
-    };
-
-    // Override store.save: wwebjs-mongo mencari file di root (cwd), sedangkan whatsapp-web.js
-    // menyimpannya di folder .wwebjs_auth/. Override ini membaca dari path yang tepat dan
-    // menggunakan stream 'finish'/'close' agar penyimpanan ke MongoDB Atlas selalu mulus.
-    store.save = async function (options) {
-      const sessionZip = `${options.session}.zip`;
-      const possiblePaths = [
-        path.join(process.cwd(), '.wwebjs_auth', sessionZip),
-        path.join(process.cwd(), sessionZip)
-      ];
-      const sourceZip = possiblePaths.find((p) => fs.existsSync(p));
-
-      if (!sourceZip) {
-        console.warn(`⚠️ File sesi ${sessionZip} belum ditemukan untuk disimpan ke MongoDB.`);
-        return;
-      }
-
-      const bucket = new mongoose.mongo.GridFSBucket(mongoose.connection.db, {
-        bucketName: `whatsapp-${options.session}`
-      });
-
-      await new Promise((resolve, reject) => {
-        const uploadStream = bucket.openUploadStream(sessionZip);
-        fs.createReadStream(sourceZip)
-          .pipe(uploadStream)
-          .on('error', (err) => reject(err))
-          .on('finish', () => resolve())
-          .on('close', () => resolve());
-      });
-
-      // Bersihkan backup sesi lama di MongoDB jika ada lebih dari 1 versi
-      try {
-        const documents = await bucket.find({ filename: sessionZip }).toArray();
-        if (documents.length > 1) {
-          const oldSession = documents.reduce((a, b) => (a.uploadDate < b.uploadDate ? a : b));
-          await bucket.delete(oldSession._id);
-        }
-      } catch (delErr) {
-        // Abaikan error pembersihan minor
-      }
-    };
-
-    // 4. Inisialisasi WhatsApp Web Client dengan RemoteAuth
-    console.log('🤖 Menginisialisasi WhatsApp Web Client...');
-    const executablePath = getExecutablePath();
-    if (executablePath) {
-      console.log(`🧭 Menggunakan browser sistem: ${executablePath}`);
-    }
-
-    const MODERN_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
-
-    const puppeteerOptions = {
-      headless: true,
-      protocolTimeout: 0, // Nonaktifkan protocol timeout agar Puppeteer tidak time out saat sinkronisasi sesi
-      defaultViewport: {
-        width: 1280,
-        height: 1000
-      },
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-accelerated-2d-canvas',
-        '--no-first-run',
-        '--disable-gpu',
-        '--disable-extensions',
-        '--disable-default-apps',
-        '--js-flags=--max-old-space-size=256', // Batasi alokasi RAM V8 Chromium
-        `--user-agent=${MODERN_USER_AGENT}`
-      ]
-    };
-
-    if (executablePath) {
-      puppeteerOptions.executablePath = executablePath;
-    }
-
-    const client = new Client({
-      authStrategy: new RemoteAuth({
-        store: store,
-        backupSyncIntervalMs: 300000 // Sinkronisasi backup ke MongoDB tiap 5 menit
-      }),
-      userAgent: MODERN_USER_AGENT,
-      authTimeoutMs: 120000, // Beri waktu toleransi hingga 2 menit untuk pemulihan sesi
-      puppeteer: puppeteerOptions
-    });
-    waClient = client;
-
-    // 5. Daftarkan event listener WhatsApp
-    registerWhatsAppEvents(client);
-
-    // 6. Mulai Cron Scheduler tepat satu kali setelah WhatsApp Client pertama kali siap
-    let isCronStarted = false;
-    client.on('ready', () => {
-      if (!isCronStarted) {
-        isCronStarted = true;
-        startCronScheduler(client);
-      }
-    });
-
-    // 7. Start WhatsApp client dengan penanganan navigasi/reload halaman
-    console.log('🌐 Membuka Chrome & memuat WhatsApp Web (sinkronisasi sesi)...');
-    try {
-      await client.initialize();
-    } catch (initErr) {
-      if (initErr.message && (initErr.message.includes('Execution context was destroyed') || initErr.message.includes('Session closed'))) {
-        console.warn('⚠️ Halaman WhatsApp Web memuat ulang saat otentikasi. Memulihkan koneksi inject...');
-        let retries = 10;
-        while (retries > 0) {
-          try {
-            await new Promise((r) => setTimeout(r, 2000));
-            await client.inject();
-            console.log('✅ Berhasil terhubung kembali ke WhatsApp Web setelah reload!');
-            break;
-          } catch (reinjectErr) {
-            retries--;
-            if (retries === 0) console.warn('Gagal inject ulang:', reinjectErr.message);
-          }
-        }
-      } else {
-        throw initErr;
-      }
-    }
-  } catch (error) {
-    console.error('❌ Terjadi kesalahan fatal saat inisialisasi aplikasi:', error);
+    // 3. Jalankan koneksi Baileys WhatsApp
+    await connectToWhatsApp();
+  } catch (err) {
+    console.error('❌ Terjadi kesalahan fatal pada bootstrap:', err);
     process.exit(1);
   }
 }
 
-// Tangani Uncaught Exception & Rejection
-process.on('uncaughtException', (err) => {
-  console.error('Uncaught Exception:', err);
-});
-
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
-});
-
-// Penanganan Graceful Shutdown saat Ctrl+C (SIGINT) atau Server dimatikan (SIGTERM)
-// Menutup browser Chrome secara bersih agar tidak ada proses orphan yang mengunci file sesi
-let isShuttingDown = false;
-async function gracefulShutdown(signal) {
-  if (isShuttingDown) return;
-  isShuttingDown = true;
-
-  console.log(`\n🛑 Menerima sinyal ${signal}. Menutup browser WhatsApp secara bersih...`);
-  try {
-    if (waClient) {
-      await waClient.destroy();
-    }
-    await mongoose.disconnect();
-    console.log('👋 Bot dan Chrome berhasil ditutup dengan aman.');
-  } catch (err) {
-    console.error('Error saat shutdown:', err);
-  } finally {
-    process.exit(0);
-  }
-}
-
-process.on('SIGINT', () => gracefulShutdown('SIGINT'));
-process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
-
-// Jalankan aplikasi
 bootstrap();
-
