@@ -74,6 +74,7 @@ async function sendReminderToGroup(sock, groupId, users, currentHour) {
   }
 
   const mentionsText = mentionLines.join('\n');
+  const portalUrl = 'https://monev.maganghub.kemnaker.go.id/dashboard';
   let reminderText = '';
 
   if (currentHour === 16) {
@@ -82,12 +83,14 @@ async function sendReminderToGroup(sock, groupId, users, currentHour) {
       'Halo teman-teman! Waktu menunjukkan pukul 16:00 WIB, saatnya absen Monev Maganghub hari ini.\n\n' +
       'Daftar anggota yang belum absen:\n' +
       `${mentionsText}\n\n` +
+      `🌐 *Link Portal Monev:*\n${portalUrl}\n\n` +
       '👉 Segera lakukan absensi di portal Maganghub, lalu ketik *!sudah* di grup ini.';
   } else if (currentHour > 16 && currentHour < 23) {
     reminderText =
       '⚠️ *PENGINGAT BERKALA MONEV MAGANGHUB*\n\n' +
       `Pukul ${currentHour}:00 WIB — Anggota berikut terpantau *belum absen* Monev Maganghub:\n\n` +
       `${mentionsText}\n\n` +
+      `🌐 *Link Portal Monev:*\n${portalUrl}\n\n` +
       '👉 Yuk luangkan waktu sebentar untuk absen, lalu balas dengan ketik *!sudah* di grup ini!';
   } else if (currentHour >= 23) {
     reminderText =
@@ -95,12 +98,14 @@ async function sendReminderToGroup(sock, groupId, users, currentHour) {
       'Panggilan terakhir untuk absen Monev Maganghub hari ini sebelum batas akhir!\n\n' +
       'Anggota yang belum konfirmasi:\n' +
       `${mentionsText}\n\n` +
+      `🌐 *Link Portal Monev:*\n${portalUrl}\n\n` +
       '👉 Segera selesaikan absensi sekarang juga dan ketik *!sudah*!';
   } else {
     reminderText =
       '🔔 *PENGINGAT MONEV MAGANGHUB*\n\n' +
       'Daftar anggota yang belum melakukan absen:\n\n' +
       `${mentionsText}\n\n` +
+      `🌐 *Link Portal Monev:*\n${portalUrl}\n\n` +
       '👉 Jangan lupa absen dan konfirmasi dengan ketik *!sudah*.';
   }
 
