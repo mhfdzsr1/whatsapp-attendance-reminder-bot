@@ -76,7 +76,7 @@ function getIntroductionMessage() {
     '2. *!sudah*\n' +
     '   👉 Konfirmasikan setelah Anda selesai absen di website Maganghub hari ini.\n\n' +
     '3. *!keluar*\n' +
-    '   👉 Hapus diri sendiri dari bot jika masa magang telah selesai.\n\n' +
+    '   👉 Hapus diri sendiri dari bot dan Anda tidak akan mendapat notif reminder lagi.\n\n' +
     '4. *!bantuan* atau *!halo*\n' +
     '   👉 Menampilkan kembali pesan panduan & menu perintah ini.\n\n' +
     '🛡️ *Menu Khusus Admin Grup:*\n' +
