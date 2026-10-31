@@ -67,6 +67,21 @@ app.get('/ping', (req, res) => {
   });
 });
 
+app.get('/status', (req, res) => {
+  const isReady = !!(waClient && waClient.info);
+  res.status(200).json({
+    status: isReady ? 'READY' : 'CONNECTING',
+    isReady,
+    info: waClient && waClient.info ? {
+      wid: waClient.info.wid ? waClient.info.wid._serialized : null,
+      pushname: waClient.info.pushname || null
+    } : null,
+    uptimeSec: Math.round(process.uptime()),
+    memoryUsageMB: Math.round(process.memoryUsage().rss / 1024 / 1024),
+    timestamp: new Date().toISOString()
+  });
+});
+
 app.get('/test-reminder', async (req, res) => {
   if (!waClient) {
     return res.status(503).json({ error: 'WhatsApp client belum siap.' });
@@ -393,8 +408,6 @@ async function bootstrap() {
         '--disable-dev-shm-usage',
         '--disable-accelerated-2d-canvas',
         '--no-first-run',
-        '--no-zygote',
-        '--single-process', // Menggabungkan proses Chromium agar hemat RAM di server 512MB
         '--disable-gpu',
         '--disable-extensions',
         '--disable-default-apps',

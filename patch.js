@@ -1,6 +1,6 @@
 /**
  * patch.js
- * Otomatis memperbaiki 3 isu internal whatsapp-web.js v1.26.0 di lingkungan Cloud / Docker
+ * Memperbaiki isu internal whatsapp-web.js v1.26.0 di lingkungan Cloud / Docker / Linux
  */
 
 const fs = require('fs');
@@ -33,37 +33,26 @@ if (fs.existsSync(clientPath)) {
     content = content.replace(/async\s+inject\s*\([^)]*\)\s*\{/, replacementInject);
   }
 
-  // 2. Tunggu Socket WAWebSocketModel siap sebelum ExposeAuthStore
-  if (!content.includes('WAWebSocketModel").Socket')) {
-    const replacementWait = 'await this.pupPage.waitForFunction(\'window.Debug?.VERSION != undefined && window.require && window.require("WAWebSocketModel") && window.require("WAWebSocketModel").Socket\', {timeout: this.options.authTimeoutMs});';
-    content = content.replace(/await\s+this\.pupPage\.waitForFunction\(\s*['"]window\.Debug\?\.VERSION\s*!=\s*undefined['"]\s*,\s*\{\s*timeout:\s*this\.options\.authTimeoutMs\s*\}\s*\);/, replacementWait);
+  // 2. Pastikan loop tunggu memverifikasi WAWebSocketModel.Socket sebelum melanjutkan
+  if (!content.includes('WAWebSocketModel")?.Socket')) {
+    content = content.replace(
+      /'window\.Debug\?\.VERSION\s*!=\s*undefined'/g,
+      '\'window.Debug?.VERSION != undefined && !!window.require?.("WAWebSocketModel")?.Socket\''
+    );
   }
 
-  // 3. Picu AppStateHasSynced jika socket sudah sync saat restore sesi
-  if (!content.includes('AppState.hasSynced')) {
-    const replacementSync = "window.AuthStore.AppState.on('change:hasSynced', () => { window.onAppStateHasSyncedEvent(); }); if (window.AuthStore.AppState && window.AuthStore.AppState.hasSynced) { window.onAppStateHasSyncedEvent(); }";
-    content = content.replace(/window\.AuthStore\.AppState\.on\(\s*['"]change:hasSynced['"]\s*,\s*\(\)\s*=>\s*\{\s*window\.onAppStateHasSyncedEvent\(\);\s*\}\s*\);/, replacementSync);
+  // 3. Lindungi pembacaan state socket dari TypeError jika model belum terdefinisi
+  const targetNeedAuth = "let state = window.require('WAWebSocketModel').Socket.state;";
+  const safeNeedAuth = "const socketModel = window.require && window.require('WAWebSocketModel'); let state = socketModel && socketModel.Socket ? socketModel.Socket.state : 'UNPAIRED';";
+  if (content.includes(targetNeedAuth)) {
+    content = content.replace(targetNeedAuth, safeNeedAuth);
   }
 
-  // 4. Blokir resource media (audio, video) dan font untuk hemat RAM di cloud 512MB
-  if (!content.includes('setRequestInterception')) {
-    const targetPage = 'this.pupPage = page;';
-    const replacementPage = [
-      'this.pupPage = page;',
-      '        try {',
-      '            await page.setRequestInterception(true);',
-      '            page.on("request", (r) => {',
-      '                const rt = r.resourceType();',
-      '                if (rt === "media" || rt === "font") {',
-      '                    r.abort();',
-      '                } else {',
-      '                    r.continue();',
-      '                }',
-      '            });',
-      '        } catch (e) {}'
-    ].join('\n');
-
-    content = content.replace(targetPage, replacementPage);
+  // 4. Tangani error pada event framenavigated agar tidak menyebabkan unhandled rejection
+  const targetFrameNav = 'await this.inject();\n        });';
+  const safeFrameNav = 'try { await this.inject(); } catch (navErr) { console.warn("⚠️ [Client] Error saat inject pada framenavigated:", navErr.message); }\n        });';
+  if (content.includes(targetFrameNav)) {
+    content = content.replace(targetFrameNav, safeFrameNav);
   }
 
   fs.writeFileSync(clientPath, content, 'utf8');
